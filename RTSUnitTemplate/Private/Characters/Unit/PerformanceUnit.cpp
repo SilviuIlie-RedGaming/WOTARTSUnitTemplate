@@ -121,6 +121,11 @@ void APerformanceUnit::BeginPlay()
 
 		if (HealthWidgetComp)
 		{
+			if (HealthBarWidgetClass && !HealthWidgetComp->GetWidgetClass())
+			{
+				HealthWidgetComp->SetWidgetClass(HealthBarWidgetClass);
+				HealthWidgetComp->InitWidget();
+			}
 			HealthWidgetRelativeOffset = FVector(0.f, 0.f, CapsuleHalfHeight + HealthWidgetHeightOffset);
 			HealthWidgetComp->SetRelativeLocation(HealthWidgetRelativeOffset);
 		}
@@ -341,13 +346,33 @@ void APerformanceUnit::HandleStandardHealthBarVisibility()
 
 	const bool bFogAllows = (!EnableFog || IsVisibleEnemy || IsMyTeam);
 
-	if (IsOnViewport && (OpenHealthWidget || bShowLevelOnly) && !HealthBarUpdateTriggered && bFogAllows)
+	// Check if production is active (currently producing OR has queued items)
+	AUnitBase* WidgetOwner = HealthBarWidget->OwnerCharacter;
+	bool bIsProducing = WidgetOwner && WidgetOwner->CastTime > 0.0f && WidgetOwner->UnitControlTimer > 0.0f && WidgetOwner->UnitControlTimer < WidgetOwner->CastTime;
+
+	// Also check if there are queued abilities (production queue not empty)
+	if (!bIsProducing && WidgetOwner)
+	{
+		if (AGASUnit* GASUnit = Cast<AGASUnit>(WidgetOwner))
+		{
+			bIsProducing = GASUnit->GetQueuedAbilities().Num() > 0;
+		}
+	}
+
+	if (IsOnViewport && (OpenHealthWidget || bShowLevelOnly || bIsProducing) && !HealthBarUpdateTriggered && bFogAllows)
 	{
 		HealthBarWidget->SetVisibility(ESlateVisibility::Visible);
 		HealthBarUpdateTriggered = true;
 	}
 	else if (HealthBarUpdateTriggered && !OpenHealthWidget && !bShowLevelOnly)
 	{
+		if (bIsProducing)
+		{
+			// Production in progress - keep widget visible and update it
+			HealthBarWidget->UpdateWidget();
+			return;
+		}
+
 		HealthBarWidget->SetVisibility(ESlateVisibility::Collapsed);
 		HealthBarUpdateTriggered = false;
 	}
@@ -512,7 +537,7 @@ void APerformanceUnit::FireEffects_Implementation(UNiagaraSystem* ImpactVFX, USo
         }
 
         // Play the impact sound
-        if (ImpactSound)
+        if (IsValid(ImpactSound))
         {
             if (SoundDelay > 0.f)
             {

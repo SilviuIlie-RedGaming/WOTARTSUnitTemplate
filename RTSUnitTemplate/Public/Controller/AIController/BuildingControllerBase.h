@@ -45,7 +45,7 @@ public:
 
 	
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = RTSUnitTemplate)
-	TArray<bool> AutoExeAbilitysArray = { true, false, false, false, false, false };
+	TArray<bool> AutoExeAbilitysArray = { false, false, false, false, false, false };
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = RTSUnitTemplate)
 	float ExecutenDelayTime = 3.f;

@@ -66,6 +66,9 @@ public:
 	// Track execution to know if an ability class has ever been executed this session
 	virtual void ActivateAbility(const FGameplayAbilitySpecHandle Handle, const FGameplayAbilityActorInfo* ActorInfo, const FGameplayAbilityActivationInfo ActivationInfo, const FGameplayEventData* TriggerEventData) override;
 
+	// Override to skip cost/cooldown commitment if ability was activated from queue
+	virtual bool CommitAbility(const FGameplayAbilitySpecHandle Handle, const FGameplayAbilityActorInfo* ActorInfo, const FGameplayAbilityActivationInfo ActivationInfo, FGameplayTagContainer* OptionalRelevantTags = nullptr) override;
+
 	virtual void EndAbility(const FGameplayAbilitySpecHandle Handle, const FGameplayAbilityActorInfo* ActorInfo, const FGameplayAbilityActivationInfo ActivationInfo, bool bReplicateEndAbility, bool bWasCancelled) override;
 
 	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = RTSUnitTemplate)
@@ -73,9 +76,29 @@ public:
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = RTSUnitTemplate)
 	FString AbilityName = "Ability X: \n\n";
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = RTSUnitTemplate)
+	FText DisplayName;
 	
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = RTSUnitTemplate)
 	FBuildingCost ConstructionCost = FBuildingCost{0, 0, 0, 0, 0, 0};
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = RTSUnitTemplate)
+	float SpawnTime = 0.f;
+
+	// The unit class this ability spawns (for tooltip stat display)
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = RTSUnitTemplate)
+	TSubclassOf<class AUnitBase> SpawnedUnitClass;
+
+	// When true, cost is deducted when placement is confirmed (OnAbilityMouseHit), not when ability activates
+	// Use this for building placement abilities where the user needs to choose a location
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = RTSUnitTemplate)
+	bool bDeferCostUntilPlacement = true;
+
+	// Set to true when this ability was activated from the queue and cost was already paid
+	// Blueprint should check this and skip any cost deduction/checks if true
+	UPROPERTY(BlueprintReadOnly, Category = RTSUnitTemplate)
+	bool bCostAlreadyPaid = false;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = RTSUnitTemplate)
 	FString KeyboardKey = "X";

@@ -72,6 +72,13 @@ namespace UnitSignals
 	const FName UseRangedAbilitys(TEXT("UseRangedAbilitys"));
 
 	const FName InitUnit(TEXT("InitUnit"));
+    const FName AttackGround(TEXT("AttackGround"));
+
+
+	// Capture Point signals
+	const FName UnitEnterCapturePoint(TEXT("UnitEnterCapturePoint"));
+	const FName UnitExitCapturePoint(TEXT("UnitExitCapturePoint"));
+	const FName CapturePointOwnershipChanged(TEXT("CapturePointOwnershipChanged"));
 	// Follow feature signals removed (replaced by FriendlyTargetEntity-driven processors)
 	// Client-side navigation mirror signals
 }
@@ -162,19 +169,6 @@ namespace UE::Mass::Debug // Optional: Use a namespace for organization
    		if (Tags.Contains<FMassStateGoToResourceExtractionTag>())  { PresentTags += TEXT(" GoToResourceExtraction"); bFoundTags = true; }
    		if (Tags.Contains<FMassStateBuildTag>())                   { PresentTags += TEXT(" Build"); bFoundTags = true; }
    		if (Tags.Contains<FMassStateResourceExtractionTag>())      { PresentTags += TEXT(" ResourceExtraction"); bFoundTags = true; }
-
-   		// Repair States
-   		if (Tags.Contains<FMassStateGoToRepairTag>())              { PresentTags += TEXT(" GoToRepair"); bFoundTags = true; }
-   		if (Tags.Contains<FMassStateRepairTag>())                  { PresentTags += TEXT(" Repair"); bFoundTags = true; }
-
-   		// Utility/Helper tags
-   		if (Tags.Contains<FMassStateStopMovementTag>())            { PresentTags += TEXT(" StopMovement"); bFoundTags = true; }
-   		if (Tags.Contains<FMassStateDisableObstacleTag>())         { PresentTags += TEXT(" DisableObstacle"); bFoundTags = true; }
-   		if (Tags.Contains<FMassStateDisableNavManipulationTag>())  { PresentTags += TEXT(" DisableNavManipulation"); bFoundTags = true; }
-   		if (Tags.Contains<FMassStateChargingTag>())                { PresentTags += TEXT(" Charging"); bFoundTags = true; }
-   		if (Tags.Contains<FMassStopGameplayEffectTag>())           { PresentTags += TEXT(" StopGameplayEffect"); bFoundTags = true; }
-   		if (Tags.Contains<FMassStopUnitDetectionTag>())            { PresentTags += TEXT(" StopUnitDetection"); bFoundTags = true; }
-   		if (Tags.Contains<FMassDisableAvoidanceTag>())             { PresentTags += TEXT(" DisableAvoidance"); bFoundTags = true; }
 
     	//if (Composition.Tags.Contains<FNeedsActorBindingInitTag>()){ PresentTags += TEXT(" ActorBindingInit"); bFoundTags = true; }
     	

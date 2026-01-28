@@ -23,14 +23,14 @@ class RTSUNITTEMPLATE_API UResourceEntryWidget : public UUserWidget
 
 public:
 	/** Sets the data for this widget and updates its visual representation. */
-	void SetResourceData(EResourceType InResourceType, const FText& InResourceName, float InResourceAmount, int32 InWorkerCount, int32 PlayerTeamId, UTexture2D* InIconTexture = nullptr, float InMaxResourceAmount = 0.0f, bool bInIsSupplyLike = false, bool bInCollapseWorkerUI = false);
+	virtual void SetResourceData(EResourceType InResourceType, const FText& InResourceName, float InResourceAmount, int32 InWorkerCount, int32 PlayerTeamId, UTexture2D* InIconTexture = nullptr, float InMaxResourceAmount = 0.0f, bool bInIsSupplyLike = false, bool bInCollapseWorkerUI = false);
 
 	/** The type of resource this widget entry represents. */
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = RTSUnitTemplate)
 	EResourceType ResourceType;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = RTSUnitTemplate)
-	int32 TeamId = 0;
+	int32 TeamId = INDEX_NONE;
 
 	/** Number of decimal places to display for the resource amount. Default is 0. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = RTSUnitTemplate)

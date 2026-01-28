@@ -129,7 +129,8 @@ AWorkArea* AWorkingUnitBase::SpawnWorkAreaReplicated(TSubclassOf<AWorkArea> Work
 								   const FBuildingCost ConstructionCost,
 								   bool IsPaid,
 								   TSubclassOf<AUnitBase> ConstructionUnitClass,
-								   bool IsExtensionArea) 
+								   bool IsExtensionArea,
+								   TSubclassOf<ABuildingBase> BuildingClassOverride)
 {
 	
  // && !CurrentDraggedWorkArea
@@ -230,5 +231,21 @@ void AWorkingUnitBase::ClientReceiveWorkArea_Implementation(AWorkArea* ClientAre
 		{
 			ClientArea->SetActorLocation(HitResult.Location);
 		}
+	}
+}
+
+void AWorkingUnitBase::ActivateBuildEffect()
+{
+	if (IsValid(Niagara_Build))
+	{
+		Niagara_Build->Activate(true);
+	}
+}
+
+void AWorkingUnitBase::DeactivateBuildEffect()
+{
+	if (IsValid(Niagara_Build))
+	{
+		Niagara_Build->Deactivate();
 	}
 }

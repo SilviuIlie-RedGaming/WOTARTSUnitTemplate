@@ -5,6 +5,8 @@
 #include "Net/UnrealNetwork.h"
 #include "Characters/Unit/UnitBase.h"
 #include "Controller/PlayerController/ControllerBase.h"
+#include "Components/DecalComponent.h"
+#include "Materials/MaterialInstanceDynamic.h"
 #include "GameFramework/PlayerController.h"
 #include "GameFramework/CharacterMovementComponent.h"
 
@@ -27,6 +29,11 @@ AWaypoint::AWaypoint()
 
 	Niagara_A = CreateDefaultSubobject<UNiagaraComponent>(TEXT("Niagara"));
 	Niagara_A->SetupAttachment(SceneRoot);
+
+	AreaMarker = CreateDefaultSubobject<UDecalComponent>(TEXT("AreaMarker"));
+	AreaMarker->SetupAttachment(SceneRoot);
+	AreaMarker->SetRelativeRotation(FRotator(90.0f, 0.0f, 0.0f));
+	AreaMarker->DecalSize = FVector(100.f, 100.f, 100.f);
 	
 	bReplicates = true;
 	SetReplicateMovement(true);
@@ -40,6 +47,7 @@ void AWaypoint::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetim
 	DOREPLIFETIME(AWaypoint, Niagara_A);
 	DOREPLIFETIME(AWaypoint, TeamId);
 	DOREPLIFETIME(AWaypoint, NextWaypoint);
+	DOREPLIFETIME(AWaypoint, AreaMarker);
 }
 
 // Called when the game starts or when spawned
@@ -134,5 +142,19 @@ void AWaypoint::OnPlayerEnter(UPrimitiveComponent* OverlapComponent,
 				ActualCharacter->FollowPath = false;
 			}
 		}
+	}
+}
+
+void AWaypoint::SetWaypointVisibility(bool bVisible)
+{
+	if (Mesh)
+	{
+		Mesh->SetVisibility(bVisible);
+	}
+
+	if (AreaMarker)
+	{
+		AreaMarker->SetVisibility(bVisible);
+		AreaMarker->SetHiddenInGame(!bVisible);
 	}
 }

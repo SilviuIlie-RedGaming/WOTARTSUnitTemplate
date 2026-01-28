@@ -92,7 +92,7 @@ void ARTSGameModeBase::BeginPlay()
 	}
 
 	FTimerHandle TimerHandleStartDataTable;
-	GetWorldTimerManager().SetTimer(TimerHandleStartDataTable, this, &ARTSGameModeBase::DataTableTimerStart, GatherControllerTimer+5.f+DelaySpawnTableTime, false);
+	GetWorldTimerManager().SetTimer(TimerHandleStartDataTable, this, &ARTSGameModeBase::DataTableTimerStart, GatherControllerTimer + DelaySpawnTableTime, false);
 	
 }
 

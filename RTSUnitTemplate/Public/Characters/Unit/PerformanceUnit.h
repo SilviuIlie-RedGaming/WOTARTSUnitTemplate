@@ -47,13 +47,13 @@ public:
 	virtual void GetLifetimeReplicatedProps(TArray< FLifetimeProperty > & OutLifetimeProps) const override;
 
 	UPROPERTY(Replicated, EditAnywhere, BlueprintReadWrite, Category = RTSUnitTemplate)
-	UNiagaraSystem* MeleeImpactVFX;
+	UNiagaraSystem* MeleeImpactVFX = nullptr;
 	
 	UPROPERTY(Replicated, EditAnywhere, BlueprintReadWrite, Category = RTSUnitTemplate)
 	float MeeleImpactVFXDelay = 0.f;
 	
 	UPROPERTY(Replicated, EditAnywhere, BlueprintReadWrite, Category = RTSUnitTemplate)
-	UNiagaraSystem* DeadVFX;
+	UNiagaraSystem* DeadVFX = nullptr;
 
 	UPROPERTY(Replicated, EditAnywhere, BlueprintReadWrite, Category = RTSUnitTemplate)
 	FVector ScaleDeadVFX = FVector(1.f, 1.f,1.f);
@@ -64,15 +64,14 @@ public:
 	UPROPERTY(Replicated, EditAnywhere, BlueprintReadWrite, Category = RTSUnitTemplate)
 	FRotator RotateImpactVFX = FRotator::ZeroRotator;
 	
-	
 	UPROPERTY(Replicated, EditAnywhere, BlueprintReadWrite, Category = RTSUnitTemplate)
-	USoundBase* MeleeImpactSound;
+	USoundBase* MeleeImpactSound = nullptr;
 
 	UPROPERTY(Replicated, EditAnywhere, BlueprintReadWrite, Category = RTSUnitTemplate)
 	float MeleeImpactSoundDelay = 0.f;
 	
 	UPROPERTY(Replicated, EditAnywhere, BlueprintReadWrite, Category = RTSUnitTemplate)
-	USoundBase* DeadSound;
+	USoundBase* DeadSound = nullptr;
 
 	UPROPERTY(Replicated, EditAnywhere, BlueprintReadWrite, Category = RTSUnitTemplate)
 	float ScaleImpactSound = 1.f;

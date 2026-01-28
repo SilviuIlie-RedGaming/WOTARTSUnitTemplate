@@ -28,15 +28,29 @@ public:
 	// Funktion, um das Decal anzuzeigen (z.B. mit einer bestimmten Farbe).
 	UPROPERTY(EditAnywhere, Category = "Selection Decal")
 	FLinearColor SelectionColor = FLinearColor::Green;
+
+	// Color for attack target indicator (red circle when right-clicking enemy)
+	UPROPERTY(EditAnywhere, Category = "Selection Decal")
+	FLinearColor AttackIndicatorColor = FLinearColor::Red;
 	
 	UFUNCTION(BlueprintCallable, Category = "Selection Decal")
 	void ShowSelection();
+
+	// Set the selection color (e.g., for faction-based colors)
+	UFUNCTION(BlueprintCallable, Category = "Selection Decal")
+	void SetSelectionColor(FLinearColor NewColor);
 
 	// Funktion, um das Decal auszublenden.
 	UFUNCTION(BlueprintCallable, Category = "Selection Decal")
 	void HideSelection();
 
+	// Shows a temporary attack indicator (red circle) that auto-hides after Duration seconds
+	UFUNCTION(BlueprintCallable, Category = "Selection Decal")
+	void ShowAttackIndicator(float Duration = 1.0f);
+
 private:
+	// Timer handle for auto-hiding attack indicator
+	FTimerHandle AttackIndicatorTimerHandle;
 	// Die eigentliche Decal-Komponente, die den Selektionskreis projiziert.
 	//UPROPERTY(VisibleAnywhere, Category = "Selection Decal")
 	//UDecalComponent* SelectionDecal;

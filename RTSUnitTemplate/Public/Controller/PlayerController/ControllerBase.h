@@ -26,6 +26,8 @@ enum class EGridShape : uint8
 };
 
 
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnTeamIdChanged, int32, NewTeamId);
+
 UCLASS()
 class RTSUNITTEMPLATE_API AControllerBase : public APlayerController
 {
@@ -282,6 +284,9 @@ public:
 	
 	UPROPERTY(ReplicatedUsing = OnRep_SelectableTeamId, EditAnywhere, BlueprintReadWrite, Category = RTSUnitTemplate)
 	int SelectableTeamId = -1;
+
+	UPROPERTY(BlueprintAssignable, Category = RTSUnitTemplate)
+	FOnTeamIdChanged OnTeamIdChanged;
 
 	UFUNCTION()
 	void OnRep_SelectableTeamId();

@@ -33,7 +33,7 @@ public:
 	void ServerSpawnWorkArea(TSubclassOf<AWorkArea> WorkAreaClass, AWaypoint* Waypoint, FVector HitLocation);
 
 	UFUNCTION(BlueprintCallable, Category=Worker)
-	AWorkArea* SpawnWorkAreaReplicated(TSubclassOf<AWorkArea> WorkAreaClass, AWaypoint* Waypoint, FVector SpawnLocation, const  FBuildingCost ConstructionCost, bool IsPaid = false, TSubclassOf<class AUnitBase> ConstructionUnitClass = nullptr, bool IsExtensionArea = false);
+	AWorkArea* SpawnWorkAreaReplicated(TSubclassOf<AWorkArea> WorkAreaClass, AWaypoint* Waypoint, FVector SpawnLocation, const  FBuildingCost ConstructionCost, bool IsPaid = false, TSubclassOf<class AUnitBase> ConstructionUnitClass = nullptr, bool IsExtensionArea = false, TSubclassOf<class ABuildingBase> BuildingClassOverride = nullptr);
 	
 	UFUNCTION(Client, Reliable)
 	void ClientReceiveWorkArea(AWorkArea* ClientArea);
@@ -86,6 +86,14 @@ public:
 
 	UFUNCTION(BlueprintImplementableEvent, Category="RTSUnitTemplate")
 	void FinishedBuild();
+
+	// Safe wrapper to activate build Niagara effect (checks for null)
+	UFUNCTION(BlueprintCallable, Category = "RTSUnitTemplate")
+	void ActivateBuildEffect();
+
+	// Safe wrapper to deactivate build Niagara effect (checks for null)
+	UFUNCTION(BlueprintCallable, Category = "RTSUnitTemplate")
+	void DeactivateBuildEffect();
 };
 
 

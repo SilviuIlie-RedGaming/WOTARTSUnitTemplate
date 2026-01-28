@@ -122,6 +122,22 @@ void UGameplayAbilityBase::OnAbilityMouseHit_Implementation(const FHitResult& In
 
 void UGameplayAbilityBase::ActivateAbility(const FGameplayAbilitySpecHandle Handle, const FGameplayAbilityActorInfo* ActorInfo, const FGameplayAbilityActivationInfo ActivationInfo, const FGameplayEventData* TriggerEventData)
 {
+	if (ActorInfo && ActorInfo->OwnerActor.IsValid())
+	{
+		if (AGASUnit* GASUnit = Cast<AGASUnit>(ActorInfo->OwnerActor.Get()))
+		{
+			if (GASUnit->bActivatingFromQueue && !bDeferCostUntilPlacement)
+			{
+				bCostAlreadyPaid = true;
+			}
+		}
+	}
+
+	if (!bDeferCostUntilPlacement && !bCostAlreadyPaid)
+	{
+		bCostAlreadyPaid = true;
+	}
+
 	// Mark this ability class as executed in this play session (exact class type)
 	if (UClass* ThisClass = GetClass())
 	{
@@ -130,8 +146,32 @@ void UGameplayAbilityBase::ActivateAbility(const FGameplayAbilitySpecHandle Hand
 	Super::ActivateAbility(Handle, ActorInfo, ActivationInfo, TriggerEventData);
 }
 
+bool UGameplayAbilityBase::CommitAbility(const FGameplayAbilitySpecHandle Handle, const FGameplayAbilityActorInfo* ActorInfo, const FGameplayAbilityActivationInfo ActivationInfo, FGameplayTagContainer* OptionalRelevantTags)
+{
+	if (bCostAlreadyPaid)
+	{
+		return true;
+	}
+
+	if (ActorInfo && ActorInfo->OwnerActor.IsValid())
+	{
+		if (AGASUnit* GASUnit = Cast<AGASUnit>(ActorInfo->OwnerActor.Get()))
+		{
+			if (GASUnit->bActivatingFromQueue && !bDeferCostUntilPlacement)
+			{
+				bCostAlreadyPaid = true;
+				return true;
+			}
+		}
+	}
+
+	return Super::CommitAbility(Handle, ActorInfo, ActivationInfo, OptionalRelevantTags);
+}
+
 void UGameplayAbilityBase::EndAbility(const FGameplayAbilitySpecHandle Handle, const FGameplayAbilityActorInfo* ActorInfo, const FGameplayAbilityActivationInfo ActivationInfo, bool bReplicateEndAbility, bool bWasCancelled)
 {
+	bCostAlreadyPaid = false;
+
 	if (bWasCancelled && bRefundOnCancel && ActorInfo && ActorInfo->OwnerActor.IsValid())
 	{
 		if (AUnitBase* Unit = Cast<AUnitBase>(ActorInfo->OwnerActor.Get()))

@@ -122,6 +122,15 @@ void ABuildingControllerBase::CastingUnit(AUnitBase* UnitBase, float DeltaSecond
 		if (UnitBase->ActivatedAbilityInstance)
 		{
 			UnitBase->ActivatedAbilityInstance->OnAbilityCastComplete();
+
+			// Now clear ActivatedAbilityInstance since the cast has completed
+			// Only clear if the queue is empty (otherwise the queue logic handles it)
+			if (UnitBase->AbilityQueue.IsEmpty())
+			{
+				UE_LOG(LogTemp, Warning, TEXT("SPAWNBUG - BuildingController: Queue empty, clearing ActivatedAbilityInstance after OnAbilityCastComplete"));
+				UnitBase->ActivatedAbilityInstance = nullptr;
+				UnitBase->CurrentSnapshot = FQueuedAbility();
+			}
 		}
 		
 		UnitBase->SetWalkSpeed(0);

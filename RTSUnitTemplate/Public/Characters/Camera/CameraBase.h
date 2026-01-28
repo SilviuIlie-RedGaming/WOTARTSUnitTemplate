@@ -141,8 +141,14 @@ public:
 		float ZoomAccelerationRate = 10.0f;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = RTSUnitTemplate)
-		float ZoomDecelerationRate = 15.0f;
-	
+	float ZoomDecelerationRate = 15.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = RTSUnitTemplate)
+	float CameraMaxZoomOutDistance = 4000.f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = RTSUnitTemplate)
+	float CameraMinZoomInDistance = 100.f;
+
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, meta = (DisplayName = "EdgeScrollCamSpeed", Keywords = "RTSUnitTemplate EdgeScrollCamSpeed"), Category = RTSUnitTemplate)
 		float EdgeScrollCamSpeed = 200.0f;
 

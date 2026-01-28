@@ -33,7 +33,10 @@ struct FQueuedAbility
 
 	UPROPERTY()
 	TWeakObjectPtr<APlayerController> InstigatorPC;
-    
+
+	// True if cost was already paid when this ability was queued
+	bool bCostPaid = false;
+
 	bool operator==(const FQueuedAbility& Other) const
 	{
 		return AbilityClass == Other.AbilityClass
@@ -64,6 +67,16 @@ public:
 
 	UPROPERTY(Replicated, BlueprintReadWrite, EditAnywhere, Category = Ability)
 	int32 AbilityQueueSize = 0;
+
+	// Flag indicating the current ability was activated from the queue and cost was already paid
+// Blueprint should check this and skip cost deduction if true
+	UPROPERTY(BlueprintReadOnly, Category = Ability)
+	bool bActivatingFromQueue = false;
+
+		// Flag to prevent new ability activations during cancel/queue processing
+	// This prevents spam-clicking from starting new abilities while we're handling cancellation
+	UPROPERTY(BlueprintReadOnly, Category = Ability)
+	bool bIsProcessingCancel = false;
 	
 	UFUNCTION(BlueprintCallable, Category=RTSUnitTemplate)
 	const TArray<FQueuedAbility>& GetQueuedAbilities();
@@ -151,12 +164,21 @@ protected:
 	// Function called when an ability is activated
 	void OnAbilityActivated(UGameplayAbility* ActivatedAbility);
 
+	// Check if this unit belongs to the local player (same TeamId)
+	bool IsOwnedByLocalPlayer() const;
+
+	// Timer handle for queue activation (so we can cancel it if needed)
+	FTimerHandle QueueActivationTimer;
 public:
 
 	void SetupAbilitySystemDelegates();
 	// Reference to the activated ability instance
 	UPROPERTY(BlueprintReadWrite, EditDefaultsOnly, Category=Ability)
 	UGameplayAbilityBase* ActivatedAbilityInstance;
+
+	// Guard against duplicate rapid activation calls
+	double LastAbilityActivationTime = 0.0;
+	EGASAbilityInputID LastActivatedInputID = EGASAbilityInputID::None;
 
 	UPROPERTY(Replicated, BlueprintReadWrite, Category=Ability)
 	FQueuedAbility CurrentSnapshot;

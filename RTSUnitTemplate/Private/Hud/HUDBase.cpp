@@ -131,9 +131,11 @@ void AHUDBase::DrawSelectedBuildingWaypointLinks()
 void AHUDBase::DrawHUD()
 {
     if (bSelectFriendly) {
-    
-       DeselectAllUnits();
-       SelectedUnits.Empty();
+		if(!bAddToSelection)
+		{
+       		DeselectAllUnits();
+       		SelectedUnits.Empty();
+		}
        
        CurrentPoint = GetMousePos2D();
        
@@ -574,4 +576,39 @@ bool AHUDBase::IsActorInsideRec(FVector InPoint, FVector CuPoint, FVector ALocat
 	return false;
 }
 
+void AHUDBase::AddUnitToSelection(AUnitBase* Unit)
+{
+	if (!Unit || !Unit->CanBeSelected) return;
 
+	// Don't add duplicates
+	if (!SelectedUnits.Contains(Unit))
+	{
+		SelectedUnits.Add(Unit);
+		Unit->SetSelected();
+	}
+}
+
+void AHUDBase::RemoveUnitFromSelection(AUnitBase* Unit)
+{
+	if (!Unit) return;
+
+	if (SelectedUnits.Contains(Unit))
+	{
+		SelectedUnits.Remove(Unit);
+		Unit->SetDeselected();
+	}
+}
+
+void AHUDBase::ToggleUnitSelection(AUnitBase* Unit)
+{
+	if (!Unit || !Unit->CanBeSelected) return;
+
+	if (SelectedUnits.Contains(Unit))
+	{
+		RemoveUnitFromSelection(Unit);
+	}
+	else
+	{
+		AddUnitToSelection(Unit);
+	}
+}

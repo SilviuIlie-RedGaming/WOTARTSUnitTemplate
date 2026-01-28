@@ -8,6 +8,7 @@
 #include "Components/CapsuleComponent.h"
 #include "Controller/PlayerController/CustomControllerBase.h"
 #include "EngineUtils.h"
+#include "Actors/Waypoint.h"
 
 
 ABuildingBase::ABuildingBase(const FObjectInitializer& ObjectInitializer)
@@ -280,3 +281,71 @@ bool ABuildingBase::IsLocationInBeaconRange(UWorld* World, const FVector& Locati
 	return false;
 }
 
+
+AUnitBase* ABuildingBase::SpawnUnitWithRallyPoint(TSubclassOf<AUnitBase> UnitClass, FVector SpawnLocation, FRotator SpawnRotation)
+{
+	if (!UnitClass)
+	{
+		return nullptr;
+	}
+
+	UWorld* World = GetWorld();
+	if (!World)
+	{
+		return nullptr;
+	}
+
+	// Spawn the unit
+	FActorSpawnParameters SpawnParams;
+	SpawnParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AdjustIfPossibleButAlwaysSpawn;
+
+	AUnitBase* SpawnedUnit = World->SpawnActor<AUnitBase>(UnitClass, SpawnLocation, SpawnRotation, SpawnParams);
+
+	if (!SpawnedUnit)
+	{
+		return nullptr;
+	}
+
+	// Inherit team from this building
+	SpawnedUnit->TeamId = TeamId;
+
+	// If we have a rally point (NextWaypoint), send the unit there
+	if (IsValid(NextWaypoint))
+	{
+		FVector RallyLocation = NextWaypoint->GetActorLocation();
+
+		// Set the unit's run location to the rally point
+		SpawnedUnit->SetRunLocation(RallyLocation);
+		SpawnedUnit->RunLocationArray.Empty();
+		SpawnedUnit->RunLocationArrayIterator = 0;
+
+		// Set unit state to Run so it moves to the rally point
+		SpawnedUnit->SetUnitState(UnitData::Run);
+		SpawnedUnit->SwitchEntityTagByState(UnitData::Run, SpawnedUnit->UnitStatePlaceholder);
+	}
+
+	return SpawnedUnit;
+}
+
+
+void ABuildingBase::SetSelected()
+{
+	Super::SetSelected();
+
+	// Show rally point mesh when building is selected
+	if (IsValid(NextWaypoint))
+	{
+		NextWaypoint->SetWaypointVisibility(true);
+	}
+}
+
+void ABuildingBase::SetDeselected()
+{
+	Super::SetDeselected();
+
+	// Hide rally point mesh when building is deselected
+	if (IsValid(NextWaypoint))
+	{
+		NextWaypoint->SetWaypointVisibility(false);
+	}
+}

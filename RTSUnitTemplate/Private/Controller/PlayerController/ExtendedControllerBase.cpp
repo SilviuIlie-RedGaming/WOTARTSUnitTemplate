@@ -8,6 +8,7 @@
 #include "Landscape.h"
 #include "MassSignalSubsystem.h"
 #include "Characters/Camera/ExtendedCameraBase.h"
+#include "Interfaces/CapturePointInterface.h"
 #include "Characters/Camera/RLAgent.h"
 #include "Characters/Unit/BuildingBase.h"
 #include "Actors/WorkArea.h"
@@ -1407,6 +1408,34 @@ bool AExtendedControllerBase::MoveWorkArea_Local_Simplified(float DeltaSeconds)
 
     FVector MouseGround; FHitResult HitResult;
     if (!TraceMouseToGround(MouseGround, HitResult)) return true;
+
+    // Check if WorkArea is snapped to a capture point using cached reference
+    // If snapped, check distance threshold to determine if we should unsnap
+    if (DraggedWorkArea->IsSnappedToTarget())
+    {
+        AActor* SnappedCapturePoint = DraggedWorkArea->SnappedTarget;
+
+        // Validate it still implements the interface (safety check)
+        if (SnappedCapturePoint->Implements<UCapturePointInterface>())
+        {
+            FVector CaptureLocation = ICapturePointInterface::Execute_GetCaptureLocation(SnappedCapturePoint);
+
+            float CaptureRadius = ICapturePointInterface::Execute_GetCaptureRadius(SnappedCapturePoint);
+            float DistanceToCapturePoint = FVector::Dist2D(MouseGround, CaptureLocation);
+
+            // If distance exceeds threshold, unsnap and continue with normal position updates
+            if (DistanceToCapturePoint > CaptureRadius)
+            {
+                // Unsnap the WorkArea via interface
+                ICapturePointInterface::Execute_UnsnapWorkArea(SnappedCapturePoint, DraggedWorkArea);
+            }
+            else
+            {
+                // keep snapped
+                return true;
+            }
+        }
+    }
 
     // Compute desired grounded location for the dragged area
     const FVector DesiredGrounded = ComputeGroundedLocation(DraggedWorkArea, MouseGround);
@@ -3121,6 +3150,7 @@ bool AExtendedControllerBase::DropWorkArea()
 				}
 				// If this is an extension area, spawn its ConstructionUnit now on the server
 				SendWorkerToWork(SelectedUnits[0]);
+                SelectedUnits[0]->CurrentDraggedWorkArea = nullptr;
 				return true;
 		}
 
@@ -3235,6 +3265,7 @@ bool AExtendedControllerBase::DropWorkAreaForUnit(AUnitBase* UnitBase, bool bWor
 			}
 			// If this is an extension area, spawn its ConstructionUnit now on the server
 			SendWorkerToWork(UnitBase);
+            UnitBase->CurrentDraggedWorkArea = nullptr;
 			return true;
 		}
 
@@ -3383,22 +3414,42 @@ void AExtendedControllerBase::DestroyDraggedArea_Implementation(AWorkingUnitBase
 
 void AExtendedControllerBase::StopWork_Implementation(AWorkingUnitBase* Worker)
 {
-	if(Worker && Worker->GetUnitState() == UnitData::Build && Worker->BuildArea)
+    if (!Worker) return;
+
+    UnitData::EState CurrentState = Worker->GetUnitState();
+
+	if((Worker->GetUnitState() == UnitData::Build || Worker->GetUnitState() == UnitData::GoToBuild) && Worker->BuildArea)
 	{
+        bool bShouldRefund = Worker->BuildArea->StartedBuilding;
+
 		Worker->BuildArea->StartedBuilding = false;
 		Worker->BuildArea->PlannedBuilding = false;
 		Worker->BuildArea->RemoveWorkerFromArray(Worker);
-		AResourceGameMode* ResourceGameMode = Cast<AResourceGameMode>(GetWorld()->GetAuthGameMode());
 
-		if(ResourceGameMode)
-		{
-			ResourceGameMode->ModifyResource(EResourceType::Primary, Worker->TeamId, Worker->BuildArea->ConstructionCost.PrimaryCost);
-			ResourceGameMode->ModifyResource(EResourceType::Secondary, Worker->TeamId, Worker->BuildArea->ConstructionCost.SecondaryCost);
-			ResourceGameMode->ModifyResource(EResourceType::Tertiary, Worker->TeamId, Worker->BuildArea->ConstructionCost.TertiaryCost);
-			ResourceGameMode->ModifyResource(EResourceType::Rare, Worker->TeamId, Worker->BuildArea->ConstructionCost.RareCost);
-			ResourceGameMode->ModifyResource(EResourceType::Epic, Worker->TeamId, Worker->BuildArea->ConstructionCost.EpicCost);
-			ResourceGameMode->ModifyResource(EResourceType::Legendary, Worker->TeamId, Worker->BuildArea->ConstructionCost.LegendaryCost);
-		}
+        if (bShouldRefund)
+        {
+		    AResourceGameMode* ResourceGameMode = Cast<AResourceGameMode>(GetWorld()->GetAuthGameMode());
+
+		    if(ResourceGameMode)
+		    {
+			    ResourceGameMode->ModifyResource(EResourceType::Primary, Worker->TeamId, Worker->BuildArea->ConstructionCost.PrimaryCost);
+			    ResourceGameMode->ModifyResource(EResourceType::Secondary, Worker->TeamId, Worker->BuildArea->ConstructionCost.SecondaryCost);
+			    ResourceGameMode->ModifyResource(EResourceType::Tertiary, Worker->TeamId, Worker->BuildArea->ConstructionCost.TertiaryCost);
+			    ResourceGameMode->ModifyResource(EResourceType::Rare, Worker->TeamId, Worker->BuildArea->ConstructionCost.RareCost);
+			    ResourceGameMode->ModifyResource(EResourceType::Epic, Worker->TeamId, Worker->BuildArea->ConstructionCost.EpicCost);
+			    ResourceGameMode->ModifyResource(EResourceType::Legendary, Worker->TeamId, Worker->BuildArea->ConstructionCost.LegendaryCost);
+		    }
+        }
+
+        // Clear the BuildArea reference and transition worker out of build states
+        Worker->BuildArea = nullptr;
+        AUnitBase* UnitBase = Cast<AUnitBase>(Worker);
+        if (UnitBase)
+        {
+            UnitBase->SetUEPathfinding = true;
+            UnitBase->SetUnitState(UnitData::Idle);
+            UnitBase->SwitchEntityTagByState(UnitData::Idle, UnitBase->UnitStatePlaceholder);
+        }
 	}
 }
 
@@ -3764,12 +3815,18 @@ void AExtendedControllerBase::CastEndsEvent(AUnitBase* UnitBase)
 	// Ensure this logic runs only on the server
 	if (!UnitBase->HasAuthority()) return;
 	
-		FHitResult Hit;
-		GetHitResultUnderCursor(ECollisionChannel::ECC_Visibility, false, Hit);
-		if (UnitBase->ActivatedAbilityInstance)
-		{
-			UnitBase->ActivatedAbilityInstance->OnAbilityCastComplete(Hit);
-		}
+	FHitResult Hit;
+	GetHitResultUnderCursor(ECollisionChannel::ECC_Visibility, false, Hit);
+	if (UnitBase->ActivatedAbilityInstance)
+	{
+		UnitBase->ActivatedAbilityInstance->OnAbilityCastComplete(Hit);
+
+        if (UnitBase->AbilityQueue.IsEmpty())
+        {
+            UnitBase->ActivatedAbilityInstance = nullptr;
+            UnitBase->CurrentSnapshot = FQueuedAbility();
+        }
+	}
 }
 
 // --- Squad selection: forward to server in PC and apply on client ---

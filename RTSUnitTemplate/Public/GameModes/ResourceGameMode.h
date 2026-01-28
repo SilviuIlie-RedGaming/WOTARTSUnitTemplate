@@ -128,8 +128,11 @@ public:
 	float GetMaxResource(EResourceType ResourceType, int TeamId);
 
 	UFUNCTION(BlueprintCallable, Category = RTSUnitTemplate)
-	bool ModifyResourceCCost(const FBuildingCost& ConstructionCost, int32 TeamId);
+	virtual bool ModifyResourceCCost(const FBuildingCost& ConstructionCost, int32 TeamId);
 
+	// Refunds resources based on construction cost (used when canceling queued abilities)
+	UFUNCTION(BlueprintCallable, Category = RTSUnitTemplate)
+	void RefundResourceCost(const FBuildingCost& ConstructionCost, int32 TeamId);
 	
 	UFUNCTION(BlueprintCallable, Category = RTSUnitTemplate)
 	float GetResource(int TeamId, EResourceType RType);
@@ -139,6 +142,16 @@ public:
 
 	UFUNCTION(BlueprintCallable, Category = RTSUnitTemplate)
 	bool CanAffordConstruction(const FBuildingCost& ConstructionCost, int32 TeamId) const;
+
+	// Population cap checking - override in game-specific subclass
+	UFUNCTION(BlueprintCallable, Category = RTSUnitTemplate)
+	virtual bool CanSpawnUnit(int32 TeamId, int32 PopulationCost = 1) const;
+
+	UFUNCTION(BlueprintCallable, Category = RTSUnitTemplate)
+	virtual int32 GetCurrentPopulation(int32 TeamId) const;
+
+	UFUNCTION(BlueprintCallable, Category = RTSUnitTemplate)
+	virtual int32 GetMaxPopulation(int32 TeamId) const;
 
 	UFUNCTION(BlueprintCallable, Category = RTSUnitTemplate)
 	void AssignWorkAreasToWorker(AWorkingUnitBase* Worker);

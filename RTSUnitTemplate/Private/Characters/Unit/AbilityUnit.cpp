@@ -44,13 +44,7 @@ void AAbilityUnit::PossessedBy(AController* NewController)
 				if (WorldSeconds < 1.0f)
 				{
 					EffectiveDelay += static_cast<float>(GM->GatherControllerTimer);
-					UE_LOG(LogTemp, Log, TEXT("[StartAbilities] Game start detected (t=%.2f). Adding GatherControllerTimer=%d to delay. EffectiveDelay=%.2f for %s (PossessedBy path)"),
-						WorldSeconds, GM->GatherControllerTimer, EffectiveDelay, *GetName());
 				}
-			}
-			else
-			{
-				UE_LOG(LogTemp, Verbose, TEXT("[StartAbilities] No RTSGameModeBase found; using default delay %.2f for %s (PossessedBy path)"), EffectiveDelay, *GetName());
 			}
 
 			bStartAbilitiesActivationScheduled = true;
@@ -92,7 +86,6 @@ void AAbilityUnit::BeginPlay()
 	{
 		if (!bAbilitiesGranted)
 		{
-			UE_LOG(LogTemp, Log, TEXT("[StartAbilities] BeginPlay: abilities not yet granted, calling GetAbilitiesArrays for %s"), *GetName());
 			GetAbilitiesArrays();
 		}
 
@@ -107,17 +100,11 @@ void AAbilityUnit::BeginPlay()
 					if (WorldSeconds < GM->GatherControllerTimer)
 					{
 						EffectiveDelay += static_cast<float>(GM->GatherControllerTimer*2.f)+2.f;
-						UE_LOG(LogTemp, Log, TEXT("[StartAbilities] BeginPlay: game start detected (t=%.2f). Adding GatherControllerTimer=%d to delay. EffectiveDelay=%.2f for %s"),
-							WorldSeconds, GM->GatherControllerTimer, EffectiveDelay, *GetName());
 					}
 				}
 				else if (WorldSeconds < 15.f)
 				{
 					EffectiveDelay += 20.f;
-					UE_LOG(LogTemp, Verbose, TEXT("[StartAbilities] BeginPlay: No RTSGameModeBase found; using 10s delay %.2f for %s"), EffectiveDelay, *GetName());
-				}else
-				{
-					UE_LOG(LogTemp, Verbose, TEXT("[StartAbilities] BeginPlay: No RTSGameModeBase found; using default delay %.2f for %s"), EffectiveDelay, *GetName());
 				}
 
 				bStartAbilitiesActivationScheduled = true;
@@ -306,14 +293,12 @@ void AAbilityUnit::GetAbilitiesArrays()
 
 	if (bAbilitiesGranted)
 	{
-		UE_LOG(LogTemp, Verbose, TEXT("[StartAbilities] GetAbilitiesArrays skipped; abilities already granted for %s"), *GetName());
 		return;
 	}
 
 	// Give Start Abilities
 	if (StartAbilities.Num())
 	{
-		UE_LOG(LogTemp, Log, TEXT("[StartAbilities] Granting %d start abilities to %s"), StartAbilities.Num(), *GetName());
 		for (TSubclassOf<UGameplayAbilityBase>& StartupAbility : StartAbilities)
 		{
 			if (StartupAbility)
@@ -614,43 +599,29 @@ void AAbilityUnit::ActivateStartAbilitiesOnSpawn()
 	// Server only
 	if (!HasAuthority())
 	{
-		UE_LOG(LogTemp, Verbose, TEXT("[StartAbilities] Skipping activation on client for %s"), *GetName());
 		return;
 	}
 
 	if (!AbilitySystemComponent)
 	{
-		UE_LOG(LogTemp, Warning, TEXT("[StartAbilities] AbilitySystemComponent is null on %s"), *GetName());
 		return;
 	}
 
-	UE_LOG(LogTemp, Log, TEXT("[StartAbilities] Attempting to activate %d start abilities for %s"), StartAbilities.Num(), *GetName());
-
-	int32 Attempts = 0;
 	int32 Success = 0;
 
 	for (TSubclassOf<UGameplayAbilityBase>& AbilityClass : StartAbilities)
 	{
 		if (!AbilityClass)
 		{
-			UE_LOG(LogTemp, Warning, TEXT("[StartAbilities] Null ability class in StartAbilities on %s"), *GetName());
 			continue;
 		}
 
-		Attempts++;
 		const bool bActivated = AbilitySystemComponent->TryActivateAbilityByClass(AbilityClass);
-		UE_LOG(LogTemp, Log, TEXT("[StartAbilities] TryActivateAbilityByClass(%s) -> %s on %s"),
-			*AbilityClass->GetName(),
-			bActivated ? TEXT("Success") : TEXT("Failed"),
-			*GetName());
-
 		if (bActivated)
 		{
 			Success++;
 		}
 	}
-
-	UE_LOG(LogTemp, Log, TEXT("[StartAbilities] Activation summary for %s: Attempted=%d, Succeeded=%d"), *GetName(), Attempts, Success);
 
 	// If nothing activated, it may be because specs are not yet granted; try once more after the configured delay.
 	if (Success == 0 && StartAbilities.Num() > 0)
@@ -661,7 +632,6 @@ void AAbilityUnit::ActivateStartAbilitiesOnSpawn()
 			if (UWorld* World = GetWorld())
 			{
 				const float RetryDelay = FMath::Max(0.0f, StartAbilitiesActivationDelay);
-				UE_LOG(LogTemp, Log, TEXT("[StartAbilities] No abilities activated; scheduling one retry in %.2fs for %s"), RetryDelay, *GetName());
 				FTimerDelegate Delegate;
 				Delegate.BindUFunction(this, FName("ActivateStartAbilitiesOnSpawn"));
 				World->GetTimerManager().SetTimer(StartAbilitiesActivationTimer, Delegate, RetryDelay, false);

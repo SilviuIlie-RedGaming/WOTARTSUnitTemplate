@@ -7,9 +7,8 @@
 #include "Characters/Unit/UnitBase.h"
 #include "UnitTimerWidget.generated.h"
 
-/**
- * 
- */
+class UImage;
+
 UCLASS()
 class RTSUNITTEMPLATE_API UUnitTimerWidget : public UUserWidget
 {
@@ -28,10 +27,50 @@ protected:
 
 	TWeakObjectPtr<AUnitBase> OwnerCharacter;
 
-	UPROPERTY(meta = (BindWidget))
-		class UProgressBar* TimerBar;
+	UPROPERTY(BlueprintReadWrite, meta = (BindWidget), Category = "RTSUnitTemplate")
+	class UProgressBar* TimerBar;
 
-	
+	UPROPERTY(BlueprintReadWrite, meta = (BindWidgetOptional), Category = "RTSUnitTemplate")
+	class UHorizontalBox* BarHolder;
+
+	UPROPERTY(BlueprintReadWrite, meta = (BindWidgetOptional), Category = "RTSUnitTemplate")
+	UImage* UnitIcon;
+
+	// ==================== DAWN OF WAR STYLE QUEUE SLOTS ====================
+
+	// Container for queue slot widgets (HorizontalBox in Blueprint)
+	UPROPERTY(BlueprintReadWrite, meta = (BindWidgetOptional), Category = "RTSUnitTemplate")
+	class UHorizontalBox* QueueSlotsContainer;
+
+	// Widget class to spawn for each queue slot (defaults to UProductionQueueSlot)
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "RTSUnitTemplate")
+	TSubclassOf<class UProductionQueueSlot> QueueSlotWidgetClass;
+
+	// Currently spawned queue slot widgets
+	UPROPERTY()
+	TArray<class UProductionQueueSlot*> QueueSlotWidgets;
+
+	// Maximum number of queue slots to display
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "RTSUnitTemplate")
+	int32 MaxQueueSlots = 5;
+
+	// Update the queue slot display
+	void UpdateQueueSlots();
+
+	// Handler for right-click on queue slot (cancel queued ability)
+	UFUNCTION()
+	void OnQueueSlotRightClicked(int32 SlotIndex);
+
+	// ==================== CANCEL CURRENT PRODUCTION BUTTON ====================
+
+	// Optional cancel button to cancel the currently producing item
+	UPROPERTY(BlueprintReadWrite, meta = (BindWidgetOptional), Category = "RTSUnitTemplate")
+	class UButton* CancelButton;
+
+	// Handler for cancel button click
+	UFUNCTION()
+	void OnCancelButtonClicked();
+
 public:
 
 	UPROPERTY(BlueprintReadWrite, VisibleAnywhere, Category = RTSUnitTemplate)
@@ -65,4 +104,8 @@ public:
 
 	UFUNCTION(BlueprintCallable, Category = RTSUnitTemplate)
 	void TimerTick();
+
+	// Set progress bar directly (for external use, e.g., WorkArea build progress)
+	UFUNCTION(BlueprintCallable, Category = RTSUnitTemplate)
+	void SetProgress(float Percent, FLinearColor Color);
 };

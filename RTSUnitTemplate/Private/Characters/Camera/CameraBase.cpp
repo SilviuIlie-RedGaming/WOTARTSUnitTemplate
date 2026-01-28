@@ -195,9 +195,11 @@ void ACameraBase::ZoomOut(float ZoomMultiplier, bool Decelerate) {
 	
 	float zoomAmount = 0.3f * (-1) * CurrentCamSpeed.Z * ZoomMultiplier;
 	
-	if(SpringArm)
-		SpringArm->TargetArmLength += zoomAmount;
-	
+	if (SpringArm && SpringArm->TargetArmLength < CameraMaxZoomOutDistance)
+	{
+		float newTargetArmLength = SpringArm->TargetArmLength + zoomAmount;
+		SpringArm->TargetArmLength = FMath::Min(newTargetArmLength, CameraMaxZoomOutDistance);
+	}
 }
 
 void ACameraBase::ZoomIn(float ZoomMultiplier, bool Decelerate) {
@@ -212,11 +214,11 @@ void ACameraBase::ZoomIn(float ZoomMultiplier, bool Decelerate) {
 
 	float zoomAmount = 0.3f * (-1) * CurrentCamSpeed.Z * ZoomMultiplier;
 
-	
-	
-	if(SpringArm && SpringArm->TargetArmLength > 100.f)
-		SpringArm->TargetArmLength += zoomAmount;
-	
+	if (SpringArm && SpringArm->TargetArmLength > CameraMinZoomInDistance)
+	{
+		float newTargetArmLength = SpringArm->TargetArmLength + zoomAmount;
+		SpringArm->TargetArmLength = FMath::Max(newTargetArmLength, CameraMinZoomInDistance);
+	}
 }
 
 
@@ -618,5 +620,3 @@ void ACameraBase::MoveInDirection(FVector Direction, float DeltaTime)
 	
 	SetActorLocation(ProposedLocation);
 }
-
-

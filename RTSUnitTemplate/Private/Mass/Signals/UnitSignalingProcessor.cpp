@@ -42,8 +42,13 @@ static TAutoConsoleVariable<float> CVarRTS_UnitSignaling_ExecInterval(
     ECVF_Default);
 static TAutoConsoleVariable<float> CVarRTS_UnitSignaling_CreationStartDelay(
     TEXT("net.RTS.UnitSignaling.CreationStartDelay"),
-    10.0f,
+    3.0f,
     TEXT("Seconds to wait after world start before creating/linking Mass entities. If on server, also respects GameMode's GatherControllerTimer."),
+    ECVF_Default);
+static TAutoConsoleVariable<float> CVarRTS_UnitSignaling_RegistryWaitTimeout(
+    TEXT("net.RTS.UnitSignaling.RegistryWaitTimeout"),
+    3.0f,
+    TEXT("Client-side max seconds to wait for replicated registry before allowing creation."),
     ECVF_Default);
 
 UUnitSignalingProcessor::UUnitSignalingProcessor()
@@ -228,6 +233,7 @@ void UUnitSignalingProcessor::CreatePendingEntities(const float DeltaTime)
     const float Now = World->GetTimeSeconds();
 
     float StartDelay = CVarRTS_UnitSignaling_CreationStartDelay.GetValueOnGameThread();
+    const float RegistryWaitTimeout = FMath::Max(0.f, CVarRTS_UnitSignaling_RegistryWaitTimeout.GetValueOnGameThread());
 
     // On server, we can sync with GameMode's GatherControllerTimer
     if (World->GetNetMode() != NM_Client)
@@ -246,7 +252,7 @@ void UUnitSignalingProcessor::CreatePendingEntities(const float DeltaTime)
             if (CacheSub->GetRegistry(false) == nullptr)
             {
                 // Registry not yet replicated; wait a bit longer unless we are past a hard timeout (e.g. 10s)
-                if (Now < 10.f)
+                if (Now < RegistryWaitTimeout)
                 {
                     return;
                 }

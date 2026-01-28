@@ -3,6 +3,7 @@
 
 #include "Controller/PlayerController/CustomControllerBase.h"
 
+#include "Core/UnitData.h"
 #include "EngineUtils.h"
 #include "Landscape.h"
 #include "Characters/Camera/ExtendedCameraBase.h"
@@ -37,6 +38,8 @@
 #include "Characters/Unit/SpeakingUnit.h"
 #include "GameplayTagContainer.h"
 #include "Characters/Unit/ConstructionUnit.h"
+#include "Interfaces/CapturePointInterface.h"
+#include "UI/Notifications/NotificationSubsystem.h"
 
 
 void ACustomControllerBase::Multi_SetMyTeamUnits_Implementation(const TArray<AActor*>& AllUnits)
@@ -1029,12 +1032,19 @@ void ACustomControllerBase::RightClickPressedMass()
 			return;
 		}
 		
-		if (!SelectedUnits.Num() || !SelectedUnits[0]->CurrentDraggedWorkArea)
+		if (SelectedUnits.Num() > 0 && SelectedUnits[0])
 		{
-			GetHitResultUnderCursor(ECollisionChannel::ECC_Visibility, false, Hit);
-			if (!CheckClickOnWorkArea(Hit))
+			if (HandleCapturePointSelection(HitPawn))
 			{
-				RunUnitsAndSetWaypointsMass(Hit);
+				return;
+			}
+			if (!SelectedUnits[0]->CurrentDraggedWorkArea)
+			{
+				GetHitResultUnderCursor(ECC_Visibility, false, Hit);
+				if (!CheckClickOnWorkArea(Hit))
+				{
+					RunUnitsAndSetWaypointsMass(Hit);
+				}
 			}
 		}
 	}
@@ -1428,6 +1438,36 @@ void ACustomControllerBase::RunUnitsAndSetWaypointsMass(FHitResult Hit)
     }
 }
 
+bool ACustomControllerBase::HandleCapturePointSelection(const FHitResult& HitPawn)
+{
+	// Check if we clicked on a capture point
+	AActor* HitActor = HitPawn.GetActor();
+	if (HitActor && HitActor->Implements<UCapturePointInterface>())
+	{
+		for (AUnitBase* Unit : SelectedUnits)
+		{
+			if (Unit->IsWorker)
+			{
+				if (IsLocalController())
+				{
+					if (UGameInstance* GI = GetGameInstance())
+					{
+						if (UNotificationSubsystem* NotifySys = GI->GetSubsystem<UNotificationSubsystem>())
+						{
+							NotifySys->ShowMessage(NSLOCTEXT("Notifications", "WorkersCannotCapturePoints", "Workers can't capture points."), 3.0f);
+						}
+					}
+				}
+				return true;
+			}
+		}
+		ICapturePointInterface::Execute_PlayPingEffect(HitActor);
+		// Move units to the capture point
+		RunUnitsAndSetWaypointsMass(HitPawn);
+		return true;
+	}
+	return false;
+}
 
 void ACustomControllerBase::LeftClickPressedMass()
 {
@@ -1445,6 +1485,19 @@ void ACustomControllerBase::LeftClickPressedMass()
             CancelAbilitiesIfNoBuilding(U);
         }
     }
+	else if (bIsAwaitingAttackGroundTarget)
+	{
+		FHitResult Hit;
+		GetHitResultUnderCursor(ECollisionChannel::ECC_Visibility, false, Hit);
+
+		if (Hit.bBlockingHit)
+		{
+			SetAttackGroundLocationOnSelectedUnits(Hit.Location);
+		}
+
+		bIsAwaitingAttackGroundTarget = false;
+		return;
+	}
     else if (AttackToggled)
     {
         // 1) get world hit under cursor for ground and pawn
@@ -1536,15 +1589,28 @@ void ACustomControllerBase::LeftClickPressedMass()
         FHitResult HitPawn;
         GetHitResultUnderCursor(ECollisionChannel::ECC_Pawn, false, HitPawn);
 
+    	// Check if we have a dragged work area (building placement preview) - handles both keyboard and UI-triggered abilities
+    	bool bHasDraggedWorkArea = (SelectedUnits.Num() > 0 && SelectedUnits[0] && SelectedUnits[0]->CurrentDraggedWorkArea);
+
         // Only call the server if we previously activated an ability via keyboard
-        if (bUsedKeyboardAbilityBeforeClick)
+        if (bUsedKeyboardAbilityBeforeClick || bHasDraggedWorkArea)
         {
             bUsedKeyboardAbilityBeforeClick = false; // consume the flag
             // Send client work area transform (if any) to ensure server has the same placement
             bool bHasClientWorkAreaTransform = false;
             FTransform ClientWorkAreaTransform;
-            if (SelectedUnits.Num() > 0 && SelectedUnits[0] && SelectedUnits[0]->CurrentDraggedWorkArea)
+            if (bHasDraggedWorkArea)
             {
+            	// Skip normal placement if the dragged work area is a required to snap to build
+            	if (SelectedUnits[0]->CurrentDraggedWorkArea->RequiresSnappedTargetToBuild && !SelectedUnits[0]->CurrentDraggedWorkArea->IsSnappedToTarget())
+            	{
+            		if (DropWorkAreaFailedSound)
+            		{
+            			UGameplayStatics::PlaySound2D(this, DropWorkAreaFailedSound);
+            		}
+            		return;
+            	}
+            	
                 bHasClientWorkAreaTransform = true;
                 ClientWorkAreaTransform = SelectedUnits[0]->CurrentDraggedWorkArea->GetActorTransform();
             }
@@ -1617,8 +1683,8 @@ void ACustomControllerBase::Client_ContinueSelectionAfterAbility_Implementation(
         {
             if (IsCtrlPressed)
             {
-                FGameplayTag Tag = HitUnit->UnitTags.First();
-                SelectUnitsWithTag(Tag, SelectableTeamId);
+                // CTRL+click: Toggle unit in/out of selection
+                HUDBase->ToggleUnitSelection(HitUnit);
             }
             else
             {
@@ -1639,6 +1705,7 @@ void ACustomControllerBase::Client_ContinueSelectionAfterAbility_Implementation(
         {
             HUDBase->InitialPoint = HUDBase->GetMousePos2D();
             HUDBase->bSelectFriendly = true;
+            HUDBase->bAddToSelection = IsCtrlPressed; // CTRL+drag adds to selection
         }
     }
 }
@@ -2108,3 +2175,76 @@ void ACustomControllerBase::Server_SetPendingTeam_Implementation(int32 TeamId)
 
 // === Client mirror helpers ===
 
+void ACustomControllerBase::SetStanceOnSelectedUnits(uint8 NewStance)
+{
+	for (AUnitBase* Unit : SelectedUnits)
+	{
+		if (Unit)
+		{
+			Server_SetUnitStance(Unit, NewStance);
+		}
+	}
+}
+
+void ACustomControllerBase::Server_SetUnitStance_Implementation(AUnitBase* Unit, uint8 NewStance)
+{
+	if (!Unit) return;
+
+	Unit->CurrentStance = static_cast<UnitStanceData::EStance>(NewStance);
+
+	UE_LOG(LogTemp, Log, TEXT("[CustomControllerBase] Server_SetUnitStance: Unit %s set to stance %d"),
+		*Unit->GetName(), NewStance);
+}
+
+void ACustomControllerBase::SetAttackGroundLocationOnSelectedUnits(const FVector& Location)
+{
+	for (AUnitBase* Unit : SelectedUnits)
+	{
+		if (Unit)
+		{
+			Server_SetAttackGroundLocation(Unit, Location);
+		}
+	}
+}
+
+void ACustomControllerBase::Server_SetAttackGroundLocation_Implementation(AUnitBase* Unit, const FVector& Location)
+{
+	if (!Unit) return;
+
+	Unit->AttackGroundLocation = Location;
+	Unit->CurrentStance = UnitStanceData::EStance::AttackGround;
+
+	UE_LOG(LogTemp, Log, TEXT("[CustomControllerBase] Server_SetAttackGroundLocation: Unit %s attacking location %s"),
+		*Unit->GetName(), *Location.ToString());
+}
+
+void ACustomControllerBase::DestroySelectedUnits()
+{
+	// Copy array since destroying units will modify the original
+	TArray<AUnitBase*> UnitsToDestroy = SelectedUnits;
+
+	for (AUnitBase* Unit : UnitsToDestroy)
+	{
+		if (Unit)
+		{
+			Server_DestroyUnit(Unit);
+		}
+	}
+
+	// Clear selection after destroying
+	SelectedUnits.Empty();
+}
+
+void ACustomControllerBase::Server_DestroyUnit_Implementation(AUnitBase* Unit)
+{
+	if (!Unit) return;
+
+	UE_LOG(LogTemp, Log, TEXT("[CustomControllerBase] Server_DestroyUnit: Destroying unit %s"), *Unit->GetName());
+
+	// Set health to 0 to trigger the normal death handling in the controller tick
+	if (Unit->Attributes)
+	{
+		Unit->SetHealth(0.f);
+	}
+	Unit->SetUnitState(UnitData::Dead);
+}

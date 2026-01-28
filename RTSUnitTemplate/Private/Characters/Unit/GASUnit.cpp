@@ -17,12 +17,28 @@
 #include "Net/UnrealNetwork.h"
 #include "Engine/ActorChannel.h"
 #include "GameModes/ResourceGameMode.h"
-
+#include "UI/Notifications/NotificationSubsystem.h"
+#include "Actors/WorkArea.h"
+#include "Engine/GameInstance.h"
 
 // Called when the game starts or when spawned
 void AGASUnit::BeginPlay()
 {
 	Super::BeginPlay();
+}
+
+bool AGASUnit::IsOwnedByLocalPlayer() const
+{
+	if (!GetWorld()) return false;
+
+	APlayerController* LocalPC = GetWorld()->GetFirstPlayerController();
+	if (!LocalPC) return false;
+
+	AControllerBase* ControllerBase = Cast<AControllerBase>(LocalPC);
+	if (!ControllerBase) return false;
+
+	// Check if the unit's TeamId matches the local player's SelectableTeamId
+	return TeamId == ControllerBase->SelectableTeamId;
 }
 
 void AGASUnit::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const
@@ -108,7 +124,7 @@ void AGASUnit::GrantAbilitiesFromList(const TArray<TSubclassOf<UGameplayAbilityB
             UE_LOG(LogTemp, Error, TEXT("Could not get CDO for AbilityClass %s on %s."), *AbilityClass->GetName(), *this->GetName());
             continue; // Skip if we can't get the CDO for some reason
         }
-        
+
         // 3. --- CONSTRUCT SPEC and GIVE ABILITY ---
         // The tooltip text generation has been removed from the server code.
         FGameplayAbilitySpec AbilitySpec(
@@ -179,14 +195,21 @@ void AGASUnit::SetupAbilitySystemDelegates()
 	{
 		// Log error if AbilitySystemComponent is null
 		//UE_LOG(LogTemp, Warning, TEXT("SetupAbilitySystemDelegates: AbilitySystemComponent is null."));
-	}
+    }
 }
 
-
-// This is your handler for when an ability is activated
 void AGASUnit::OnAbilityActivated(UGameplayAbility* ActivatedAbility)
 {
 	ActivatedAbilityInstance = Cast<UGameplayAbilityBase>(ActivatedAbility);
+
+	// If we're activating from queue, mark cost as already paid IMMEDIATELY
+	// This must happen before Blueprint's ActivateAbility runs, which also happens during TryActivateAbilityByClass
+	// The callback order is: OnAbilityActivated -> Blueprint ActivateAbility
+	// So setting the flag here ensures Blueprint sees it before trying to deduct cost
+	if (bActivatingFromQueue && ActivatedAbilityInstance)
+	{
+		ActivatedAbilityInstance->bCostAlreadyPaid = true;
+	}
 }
 
 void AGASUnit::SetToggleUnitDetection_Implementation(bool ToggleTo)
@@ -207,7 +230,7 @@ bool AGASUnit::ActivateAbilityByInputID(
 	APlayerController* InstigatorPC)
 {
 	
-	if (!AbilitySystemComponent)
+	if (!AbilitySystemComponent || bIsProcessingCancel)
 	{
 		return false;
 	}
@@ -228,20 +251,40 @@ bool AGASUnit::ActivateAbilityByInputID(
 	{
 		return false;
 	}
-	
-	if (ActivatedAbilityInstance)
+
+	LastAbilityActivationTime = FPlatformTime::Seconds();
+	LastActivatedInputID = InputID;
+
+	AResourceGameMode* ResourceGameMode = Cast<AResourceGameMode>(GetWorld()->GetAuthGameMode());
+	const FBuildingCost& Cost = Ability->ConstructionCost;
+	bool bHasCost = (Cost.PrimaryCost > 0 || Cost.SecondaryCost > 0 || Cost.TertiaryCost > 0 ||
+		Cost.RareCost > 0 || Cost.EpicCost > 0 || Cost.LegendaryCost > 0);
+
+	bool bIsBusy = ActivatedAbilityInstance && ActivatedAbilityInstance->IsActive();
+
+	if (bIsBusy)
 	{
 		if (Ability->UseAbilityQue && AbilityQueueSize < 6)
 		{
-			// ASC is busy, so let's queue the ability
+			if (bHasCost && ResourceGameMode && !Ability->bDeferCostUntilPlacement)
+			{
+				if (!ResourceGameMode->CanAffordConstruction(Cost, TeamId))
+				{
+					return false;
+				}
+				ResourceGameMode->ModifyResourceCCost(Cost, TeamId);
+			}
+
 			FQueuedAbility Queued;
 			Queued.AbilityClass = AbilityToActivate;
 			Queued.HitResult    = HitResult;
 			Queued.InstigatorPC = InstigatorPC;
+			Queued.bCostPaid    = bHasCost && !Ability->bDeferCostUntilPlacement;
 			QueSnapshot.Add(Queued);
 			AbilityQueue.Enqueue(Queued);
 			AbilityQueueSize++;
-		}else
+		}
+		else if(HitResult.IsValidBlockingHit() || Ability->bDeferCostUntilPlacement)
 		{
 			FireMouseHitAbility(HitResult);
 		}
@@ -249,11 +292,14 @@ bool AGASUnit::ActivateAbilityByInputID(
 	}
 	else
 	{
-		// 2) Try to activate
 		bool bIsActivated = AbilitySystemComponent->TryActivateAbilityByClass(AbilityToActivate);
 		if (bIsActivated)
 		{
-			// If you have a pointer to the active ability instance:
+			if (bHasCost && ResourceGameMode && !Ability->bDeferCostUntilPlacement)
+			{
+				ResourceGameMode->ModifyResourceCCost(Cost, TeamId);
+			}
+
 			FQueuedAbility Queued;
 			Queued.AbilityClass = AbilityToActivate;
 			Queued.HitResult    = HitResult;
@@ -263,7 +309,7 @@ bool AGASUnit::ActivateAbilityByInputID(
 		}
 		if (bIsActivated && HitResult.IsValidBlockingHit())
 		{
-			if (ActivatedAbilityInstance) 
+			if (HitResult.IsValidBlockingHit() || Ability->bDeferCostUntilPlacement)
 			{
 				FireMouseHitAbility(HitResult);
 			}
@@ -272,8 +318,6 @@ bool AGASUnit::ActivateAbilityByInputID(
 		{
 			if (Ability->UseAbilityQue && AbilityQueueSize < 6)
 			{
-				// Optionally queue the ability if activation fails 
-				// (e.g. on cooldown). Depends on your desired flow.
 				FQueuedAbility Queued;
 				Queued.AbilityClass = AbilityToActivate;
 				Queued.HitResult    = HitResult;
@@ -290,90 +334,109 @@ bool AGASUnit::ActivateAbilityByInputID(
 
 void AGASUnit::OnAbilityEnded(UGameplayAbility* EndedAbility)
 {
-		// Example: delay by half a second
-		const float DelayTime = 0.1f; 
-		FTimerHandle TimerHandle;
-		GetWorld()->GetTimerManager().SetTimer(
-			TimerHandle,
-			this, 
-			&AGASUnit::ActivateNextQueuedAbility, 
-			DelayTime, 
-			/*bLoop=*/false
-		);
+	UGameplayAbilityBase* EndedAbilityBase = Cast<UGameplayAbilityBase>(EndedAbility);
+	if (EndedAbilityBase == ActivatedAbilityInstance)
+	{
+		ActivatedAbilityInstance = nullptr;
+		CurrentSnapshot = FQueuedAbility();
+	}
 
-	UGameplayAbilityBase* AbilityToActivate = Cast<UGameplayAbilityBase>(EndedAbility);
-	AbilityToActivate->ClickCount = 0;
+	if (EndedAbilityBase)
+	{
+		EndedAbilityBase->ClickCount = 0;
+	}
 
+	bIsProcessingCancel = false;
+
+	const float DelayTime = 0.1f;
+	GetWorld()->GetTimerManager().SetTimer(
+		QueueActivationTimer,
+		this,
+		&AGASUnit::ActivateNextQueuedAbility,
+		DelayTime,
+		false
+	);
 }
 
 void AGASUnit::ActivateNextQueuedAbility()
 {
-	//UE_LOG(LogTemp, Warning, TEXT("ActivateNextQueuedAbility called. Checking if there are abilities in the queue."));
+	static thread_local int32 RecursionDepth = 0;
+	if (RecursionDepth > 10)
+	{
+		RecursionDepth = 0;
+		ActivatedAbilityInstance = nullptr;
+		CurrentSnapshot = FQueuedAbility();
+		return;
+	}
 
-	// 1) Check if there's something waiting in the queue
 	if (!AbilityQueue.IsEmpty())
 	{
-		//UE_LOG(LogTemp, Warning, TEXT("Ability queue is NOT empty. Attempting to dequeue the next ability."));
-
 		FQueuedAbility Next;
 		bool bDequeued = AbilityQueue.Dequeue(Next);
 
 		if (bDequeued && AbilitySystemComponent)
 		{
-			//UE_LOG(LogTemp, Warning, TEXT("Successfully dequeued ability: %s"), *Next.AbilityClass->GetName());
-			QueSnapshot.Remove(Next);
+			QueSnapshot.RemoveSingle(Next);
 			ActivatedAbilityInstance = nullptr;
 			AbilityQueueSize--;
-			// 2) Activate the next queued ability
-			//UE_LOG(LogTemp, Warning, TEXT("Attempting to activate ability: %s"), *Next.AbilityClass->GetName());
-			bool bIsActivated = AbilitySystemComponent->TryActivateAbilityByClass(Next.AbilityClass);
 
-			
-			
-			
+			UGameplayAbilityBase* AbilityCDO = Next.AbilityClass ? Next.AbilityClass->GetDefaultObject<UGameplayAbilityBase>() : nullptr;
+			AResourceGameMode* ResourceGameMode = Cast<AResourceGameMode>(GetWorld()->GetAuthGameMode());
+			bool bHasCost = false;
+			FBuildingCost Cost;
+
+			if (AbilityCDO)
+			{
+				Cost = AbilityCDO->ConstructionCost;
+				bHasCost = (Cost.PrimaryCost > 0 || Cost.SecondaryCost > 0 || Cost.TertiaryCost > 0 ||
+					Cost.RareCost > 0 || Cost.EpicCost > 0 || Cost.LegendaryCost > 0);
+
+				if (bHasCost && ResourceGameMode && !Next.bCostPaid && !ResourceGameMode->CanAffordConstruction(Cost, TeamId))
+				{
+					RecursionDepth++;
+					ActivateNextQueuedAbility();
+					RecursionDepth--;
+					return;
+				}
+			}
+
+			bActivatingFromQueue = true;
+			bool bIsActivated = AbilitySystemComponent->TryActivateAbilityByClass(Next.AbilityClass);
+			bActivatingFromQueue = false;
+
 			if (bIsActivated)
 			{
+				bool bIsDeferred = AbilityCDO ? AbilityCDO->bDeferCostUntilPlacement : false;
+				if (bHasCost && ResourceGameMode && !Next.bCostPaid && !bIsDeferred)
+				{
+					ResourceGameMode->ModifyResourceCCost(Cost, TeamId);
+				}
 				CurrentSnapshot = Next;
 				CurrentInstigatorPC = Next.InstigatorPC.Get();
-				//UE_LOG(LogTemp, Warning, TEXT("Ability %s activated successfully."), *Next.AbilityClass->GetName());
 
-				if (Next.HitResult.IsValidBlockingHit())
+				if (Next.HitResult.IsValidBlockingHit() && ActivatedAbilityInstance)
 				{
-					//UE_LOG(LogTemp, Warning, TEXT("HitResult is valid. Checking if ActivatedAbilityInstance exists."));
-					
-					if (ActivatedAbilityInstance)
-					{
-						//UE_LOG(LogTemp, Warning, TEXT("ActivatedAbilityInstance is valid. Firing Mouse Hit Ability."));
-						FireMouseHitAbility(Next.HitResult);
-					}
-					else
-					{
-						CancelCurrentAbility();
-						//UE_LOG(LogTemp, Warning, TEXT("ActivatedAbilityInstance is NULL. Skipping FireMouseHitAbility."));
-					}
-				}
-				else
-				{
-					//UE_LOG(LogTemp, Warning, TEXT("HitResult is NOT valid. Skipping FireMouseHitAbility."));
+					FireMouseHitAbility(Next.HitResult);
 				}
 			}
 			else
 			{
-				// Very often we land here. What can we do? -> Because of the Cooldown!
-				//UE_LOG(LogTemp, Error, TEXT("Failed to activate ability: %s. Resetting ActivatedAbilityInstance and CurrentSnapshot."), *Next.AbilityClass->GetName());
-				CancelCurrentAbility();
+				// Activation failed (cooldown, etc.) - try next ability
+				// No refund needed since cost wasn't deducted when queueing while busy
+				RecursionDepth++;
+				ActivateNextQueuedAbility();
+				RecursionDepth--;
 			}
 		}
 		else
 		{
-			//UE_LOG(LogTemp, Error, TEXT("Failed to dequeue ability or AbilitySystemComponent is null."));
 			DequeueAbility(0);
 		}
 	}
 	else
 	{
-		//UE_LOG(LogTemp, Warning, TEXT("Ability queue is empty. Resetting ActivatedAbilityInstance and CurrentSnapshot."));
-		CancelCurrentAbility();
+		ActivatedAbilityInstance = nullptr;
+		CurrentSnapshot = FQueuedAbility();
 	}
 }
 
@@ -381,12 +444,11 @@ TSubclassOf<UGameplayAbility> AGASUnit::GetAbilityForInputID(EGASAbilityInputID 
 {
 	int32 AbilityIndex = static_cast<int32>(InputID) - static_cast<int32>(EGASAbilityInputID::AbilityOne);
 
-	// Check if the AbilityIndex is valid in the AbilitiesArray
 	if (AbilitiesArray.IsValidIndex(AbilityIndex))
 	{
 		return AbilitiesArray[AbilityIndex];
 	}
-	
+
 	return nullptr;
 }
 
@@ -438,31 +500,51 @@ bool AGASUnit::DequeueAbility(int Index)
 {
 	TArray<FQueuedAbility> TempArray;
 	FQueuedAbility TempItem;
+	FQueuedAbility RemovedItem;
 
-	// 1) Transfer all items from the queue into the array
 	while (AbilityQueue.Dequeue(TempItem))
 	{
 		TempArray.Add(TempItem);
 	}
 
-	// 2) Remove item at 'Index'
 	bool bRemoved = false;
 	if (TempArray.IsValidIndex(Index))
 	{
+		RemovedItem = TempArray[Index];
 		TempArray.RemoveAt(Index);
 		bRemoved = true;
 	}
 
-	// 3) Rebuild the queue without the removed item
 	for (const FQueuedAbility& Item : TempArray)
 	{
 		AbilityQueue.Enqueue(Item);
 	}
 
-	// Also update your 'QueSnapshot' if you’re mirroring
 	QueSnapshot = TempArray;
 	AbilityQueueSize--;
-	
+
+	// Refund resources only if cost was paid when queueing
+	if (bRemoved && RemovedItem.AbilityClass && RemovedItem.bCostPaid)
+	{
+		UGameplayAbilityBase* AbilityCDO = RemovedItem.AbilityClass->GetDefaultObject<UGameplayAbilityBase>();
+
+		if (AbilityCDO)
+		{
+			const FBuildingCost& Cost = AbilityCDO->ConstructionCost;
+			bool bHasCost = (Cost.PrimaryCost > 0 || Cost.SecondaryCost > 0 || Cost.TertiaryCost > 0 ||
+				Cost.RareCost > 0 || Cost.EpicCost > 0 || Cost.LegendaryCost > 0);
+
+			if (bHasCost)
+			{
+				AResourceGameMode* ResourceGameMode = Cast<AResourceGameMode>(GetWorld()->GetAuthGameMode());
+				if (ResourceGameMode)
+				{
+					ResourceGameMode->RefundResourceCost(Cost, TeamId);
+				}
+			}
+		}
+	}
+
 	return bRemoved;
 }
 
@@ -479,25 +561,64 @@ const FQueuedAbility AGASUnit::GetCurrentSnapshot()
 
 void AGASUnit::CancelCurrentAbility()
 {
-    // Check if this code is executing on a client.
-    if (!HasAuthority())
-    {
-        return;
-    }
-
-	if (ActivatedAbilityInstance)
+	// Server only
+	if (!HasAuthority())
 	{
-		{
-			if(CurrentDraggedAbilityIndicator)
-			{
-				CurrentDraggedAbilityIndicator->Destroy(true, true);
-				CurrentDraggedAbilityIndicator = nullptr;
-			}
+		return;
+	}
 
-			ActivatedAbilityInstance->ClickCount = 0;
-			ActivatedAbilityInstance->K2_CancelAbility();
-			ActivatedAbilityInstance = nullptr;
-			CurrentSnapshot = FQueuedAbility();
+	if (bIsProcessingCancel || !ActivatedAbilityInstance) return;
+
+	bIsProcessingCancel = true;
+
+	UGameplayAbilityBase* AbilityToCancel = ActivatedAbilityInstance;
+	ActivatedAbilityInstance = nullptr;
+
+	// Refund if cost was paid (deferred abilities only pay on placement)
+	bool bShouldRefund = true;
+	if (AbilityToCancel->bDeferCostUntilPlacement && AbilityToCancel->ClickCount == 0 && !AbilityToCancel->bCostAlreadyPaid)
+	{
+		bShouldRefund = false;
+	}
+
+	if (bShouldRefund)
+	{
+		const FBuildingCost& Cost = AbilityToCancel->ConstructionCost;
+		bool bHasCost = (Cost.PrimaryCost > 0 || Cost.SecondaryCost > 0 || Cost.TertiaryCost > 0 ||
+			Cost.RareCost > 0 || Cost.EpicCost > 0 || Cost.LegendaryCost > 0);
+
+		if (bHasCost)
+		{
+			AResourceGameMode* ResourceGameMode = Cast<AResourceGameMode>(GetWorld()->GetAuthGameMode());
+			if (ResourceGameMode)
+			{
+				ResourceGameMode->RefundResourceCost(Cost, TeamId);
+			}
 		}
 	}
+
+	if (CurrentDraggedAbilityIndicator)
+	{
+		CurrentDraggedAbilityIndicator->Destroy(true, true);
+		CurrentDraggedAbilityIndicator = nullptr;
+	}
+
+	AbilityToCancel->ClickCount = 0;
+	AbilityToCancel->K2_CancelAbility();
+	CurrentSnapshot = FQueuedAbility();
+
+	// Activate next queued ability after short delay
+	if (!AbilityQueue.IsEmpty())
+	{
+		GetWorld()->GetTimerManager().ClearTimer(QueueActivationTimer);
+		GetWorld()->GetTimerManager().SetTimer(
+			QueueActivationTimer,
+			this,
+			&AGASUnit::ActivateNextQueuedAbility,
+			0.15f,
+			false
+		);
+	}
+
+	bIsProcessingCancel = false;
 }

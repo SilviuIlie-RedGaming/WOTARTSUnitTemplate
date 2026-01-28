@@ -56,6 +56,9 @@ protected:
 	// Handles follow command on right-click. Returns true if a follow action was issued (and should early return)
 	bool TryHandleFollowOnRightClick(const FHitResult& HitPawn);
 
+	// Handles capture point click flow when units are selected. Returns true if handled.
+	bool HandleCapturePointSelection(const FHitResult& HitPawn);
+
 public:
 	UFUNCTION(NetMulticast, Reliable)
 	void Multi_SetMyTeamUnits(const TArray<AActor*>& AllUnits);
@@ -195,6 +198,34 @@ public:
 
 	UFUNCTION(Server, Reliable, BlueprintCallable,  Category = RTSUnitTemplate)
 	void SetHoldPositionOnUnit(AUnitBase* Unit);
+
+	// Flag indicating we're waiting for the player to click a ground location for Attack Ground stance
+	UPROPERTY(BlueprintReadWrite, Category = "RTSUnitTemplate|Stances")
+	bool bIsAwaitingAttackGroundTarget = false;
+
+	// Set stance on all selected units
+	UFUNCTION(BlueprintCallable, Category = "RTSUnitTemplate|Stances")
+	void SetStanceOnSelectedUnits(uint8 NewStance);
+
+	// Server RPC to set stance on a unit
+	UFUNCTION(Server, Reliable, BlueprintCallable, Category = "RTSUnitTemplate|Stances")
+	void Server_SetUnitStance(AUnitBase* Unit, uint8 NewStance);
+
+	// Set attack ground location on all selected units
+	UFUNCTION(BlueprintCallable, Category = "RTSUnitTemplate|Stances")
+	void SetAttackGroundLocationOnSelectedUnits(const FVector& Location);
+
+	// Server RPC to set attack ground location on a unit
+	UFUNCTION(Server, Reliable, BlueprintCallable, Category = "RTSUnitTemplate|Stances")
+	void Server_SetAttackGroundLocation(AUnitBase* Unit, const FVector& Location);
+
+	// Destroy (self-destruct) all selected units
+	UFUNCTION(BlueprintCallable, Category = "RTSUnitTemplate|Utility")
+	void DestroySelectedUnits();
+
+	// Server RPC to destroy a unit
+	UFUNCTION(Server, Reliable, BlueprintCallable, Category = "RTSUnitTemplate|Utility")
+	void Server_DestroyUnit(AUnitBase* Unit);
 	
 	UFUNCTION(BlueprintCallable, Category = RTSUnitTemplate)
 	void RunUnitsAndSetWaypointsMass(FHitResult Hit);

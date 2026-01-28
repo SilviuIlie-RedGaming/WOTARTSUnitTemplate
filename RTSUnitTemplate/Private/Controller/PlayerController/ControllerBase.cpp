@@ -599,27 +599,26 @@ AWaypoint* AControllerBase::CreateAWaypoint(FVector NewWPLocation, ABuildingBase
 
 	if (World && WaypointClass)
 	{
-		// Define the spawn parameters
-		FActorSpawnParameters SpawnParams;
-		SpawnParams.Owner = this;
-		SpawnParams.Instigator = GetInstigator();
+		FTransform SpawnTransform;
+		SpawnTransform.SetLocation(NewWPLocation);
+		SpawnTransform.SetRotation(FQuat::Identity);
 
-		// Use deferred spawning to set TeamId before replication and BeginPlay
-		AWaypoint* NewWaypoint = World->SpawnActorDeferred<AWaypoint>(
-			WaypointClass,
-			FTransform(FRotator::ZeroRotator, NewWPLocation),
-			this,
-			GetInstigator(),
-			ESpawnActorCollisionHandlingMethod::AlwaysSpawn
+		AWaypoint* NewWaypoint = Cast<AWaypoint>(
+			UGameplayStatics::BeginDeferredActorSpawnFromClass(
+				World,
+				WaypointClass,
+				SpawnTransform,
+				ESpawnActorCollisionHandlingMethod::AlwaysSpawn
+			)
 		);
 
 		if (NewWaypoint)
 		{
-			// Assign the team ID from the building
+			NewWaypoint->SetOwner(this);
+			NewWaypoint->SetInstigator(GetInstigator());
 			NewWaypoint->TeamId = BuildingBase->TeamId;
 			
-			// Finish spawning
-			NewWaypoint->FinishSpawning(FTransform(FRotator::ZeroRotator, NewWPLocation));
+			UGameplayStatics::FinishSpawningActor(NewWaypoint, SpawnTransform);
 
 			// Assign the new waypoint to the building
 			BuildingBase->NextWaypoint = NewWaypoint;
@@ -1211,6 +1210,9 @@ void AControllerBase::OnRep_SelectableTeamId()
 			It->UpdateVisibility();
 		}
 	}
+
+	// Broadcast delegate so widgets can react to team ID changes
+	OnTeamIdChanged.Broadcast(SelectableTeamId);
 }
 
 void AControllerBase::Multi_SetControllerDefaultWaypoint_Implementation(AWaypoint* Waypoint)

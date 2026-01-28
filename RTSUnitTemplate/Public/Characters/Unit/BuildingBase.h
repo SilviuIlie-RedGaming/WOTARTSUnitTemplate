@@ -93,12 +93,19 @@ public:
 	// Utility: Returns true if the given world location is within range of any Beacon (any BuildingBase with BeaconRange > 0)
 	UFUNCTION(BlueprintCallable, Category = RTSUnitTemplate)
 	static bool IsLocationInBeaconRange(UWorld* World, const FVector& Location);
+
+	/**
+	 * Spawns a unit from this building and sends it to the rally point if one is set.
+	 * Use this in abilities instead of raw SpawnActor to support rally points.
+	 * @param UnitClass - The class of unit to spawn
+	 * @param SpawnLocation - Where to spawn the unit (usually near the building)
+	 * @param SpawnRotation - Initial rotation for the spawned unit
+	 * @return The spawned unit, or nullptr if spawn failed
+	 */
+	UFUNCTION(BlueprintCallable, Category = RTSUnitTemplate)
+	AUnitBase* SpawnUnitWithRallyPoint(TSubclassOf<AUnitBase> UnitClass, FVector SpawnLocation, FRotator SpawnRotation);
+
+	// Override selection to show/hide rally point mesh
+	virtual void SetSelected() override;
+	virtual void SetDeselected() override;
 };
-
-
-
-
-
-
-
-

@@ -3,6 +3,8 @@
 // Copyright 2025 Silvan Teufel / Teufel-Engineering.com All Rights Reserved.
 #include "Actors/SelectionDecalComponent.h" // Pfad ggf. anpassen
 #include "Materials/MaterialInstanceDynamic.h"
+#include "Engine/World.h"
+#include "TimerManager.h"
 
 USelectionDecalComponent::USelectionDecalComponent()
 {
@@ -49,9 +51,48 @@ void USelectionDecalComponent::ShowSelection()
 	SetHiddenInGame(false);
 }
 
+void USelectionDecalComponent::SetSelectionColor(FLinearColor NewColor)
+{
+	SelectionColor = NewColor;
+	if (DynamicDecalMaterial)
+	{
+		DynamicDecalMaterial->SetVectorParameterValue("SelectionColor", SelectionColor);
+	}
+}
+
 void USelectionDecalComponent::HideSelection()
 {
 	// Wir rufen SetVisibility direkt auf DIESER Komponente auf.
 	SetVisibility(false);
 	SetHiddenInGame(true);
+}
+
+void USelectionDecalComponent::ShowAttackIndicator(float Duration)
+{
+	// Clear any existing timer
+	if (GetWorld())
+	{
+		GetWorld()->GetTimerManager().ClearTimer(AttackIndicatorTimerHandle);
+	}
+
+	// Show with attack color (red)
+	if (DynamicDecalMaterial)
+	{
+		DynamicDecalMaterial->SetVectorParameterValue("SelectionColor", AttackIndicatorColor);
+	}
+
+	SetVisibility(true);
+	SetHiddenInGame(false);
+
+	// Set timer to hide after duration
+	if (GetWorld() && Duration > 0.0f)
+	{
+		GetWorld()->GetTimerManager().SetTimer(
+			AttackIndicatorTimerHandle,
+			this,
+			&USelectionDecalComponent::HideSelection,
+			Duration,
+			false
+		);
+	}
 }

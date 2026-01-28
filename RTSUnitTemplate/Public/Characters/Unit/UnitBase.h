@@ -15,6 +15,7 @@
 #include "AI/Navigation/NavigationTypes.h"
 #include "UnitBase.generated.h"
 
+class UMeshComponent;
 
 UCLASS()
 class RTSUNITTEMPLATE_API AUnitBase : public AWorkingUnitBase
@@ -47,6 +48,14 @@ public:
 	
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = RTSUnitTemplate)
 	FString Name = "Unit";
+
+	// Training time in seconds for this unit (used for UI display)
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = RTSUnitTemplate)
+	float TrainingTime = 0.f;
+
+	// Upgrade cost for this unit (used for UI display)
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = RTSUnitTemplate)
+	int32 UpgradeCost = 0;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = RTSUnitTemplate)
 	FText Type;
@@ -81,7 +90,15 @@ protected:
 // Called when the game starts or when spawned
 	virtual void BeginPlay() override;
 
+	// Calculates the shooting location, taking into account socket names
+	UFUNCTION(BlueprintCallable, Category = RTSUnitTemplate)
+	void SetShootingMeshComponent();
 
+	UPROPERTY()
+	FVector ShootingLocation;
+
+	UPROPERTY()
+	TObjectPtr<UMeshComponent> ShootingMeshComponent = nullptr;
 
 public:	
 // Called every frame
@@ -124,6 +141,14 @@ public:
 
 	UPROPERTY(Replicated, EditAnywhere, BlueprintReadWrite, Category = RTSUnitTemplate)
 		bool bHoldPosition = false;
+
+	// Current stance of the unit (Aggressive, Defensive, Passive, AttackGround) - Set via stance buttons only
+	UPROPERTY(Replicated, BlueprintReadOnly, Category = RTSUnitTemplate)
+	TEnumAsByte<UnitStanceData::EStance> CurrentStance = UnitStanceData::EStance::Aggressive;
+
+	// Target location for Attack Ground stance (archers attack this spot continuously)
+	UPROPERTY(Replicated, BlueprintReadWrite, Category = RTSUnitTemplate)
+	FVector AttackGroundLocation = FVector::ZeroVector;
 	
 	UPROPERTY(Replicated, EditAnywhere, BlueprintReadWrite, Category = RTSUnitTemplate)
 		bool bIsInvisible = false;
@@ -221,6 +246,17 @@ public:
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadWrite, Category = RTSUnitTemplate)
 	bool DeadEffectsExecuted = false;
+
+	// Flag to prevent spamming "under attack" notifications - reset after cooldown
+	UPROPERTY(VisibleAnywhere, BlueprintReadWrite, Category = RTSUnitTemplate)
+	bool bHasNotifiedUnderAttack = false;
+
+	// Timer handle for resetting the under attack notification flag
+	FTimerHandle UnderAttackNotificationTimerHandle;
+
+	// Cooldown duration before another "under attack" notification can be shown (in seconds)
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = RTSUnitTemplate)
+	float UnderAttackNotificationCooldown = 10.0f;
 	
 	UFUNCTION(Server, Reliable, BlueprintCallable, meta = (DisplayName = "SetHealth", Keywords = "RTSUnitTemplate SetHealth"), Category = RTSUnitTemplate)
 	void SetHealth(float NewHealth);
@@ -258,6 +294,12 @@ public:
 
 	UFUNCTION(BlueprintCallable, Category = RTSUnitTemplate)
 	void ShieldCollapseCheck(float NewShield, float OldShield);
+	
+	// Reset the under attack notification flag (called by timer)
+	void ResetUnderAttackNotification();
+
+	// Notify that this unit/structure is under attack (with spam prevention)
+	void NotifyUnderAttack();
 ///////////////////////////////////////////////////////////////////
 
 
@@ -276,10 +318,10 @@ public:
 	void Deselected();
 	
 	UFUNCTION(BlueprintCallable, Category = RTSUnitTemplate)
-	void SetSelected();
+	virtual void SetSelected();
 
 	UFUNCTION(BlueprintCallable,  Category = RTSUnitTemplate)
-	void SetDeselected();
+	virtual void SetDeselected();
 
 	UPROPERTY(BlueprintReadWrite,  Category = RTSUnitTemplate)
 	TArray <FVector> RunLocationArray;
@@ -305,6 +347,8 @@ public:
 	
 	// Projectile related /////////
 public:
+	UFUNCTION(BlueprintCallable, BlueprintPure, Category = RTSUnitTemplate)
+	FVector GetShootingLocation() const;
 
 	UFUNCTION(Server, Reliable, BlueprintCallable, meta = (DisplayName = "SpawnProjectile", Keywords = "RTSUnitTemplate SpawnProjectile"), Category = RTSUnitTemplate)
 	void SpawnProjectile(AActor* Target, AActor* Attacker);
@@ -320,6 +364,9 @@ public:
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, meta = (DisplayName = "ProjectileSpawnOffset", Keywords = "RTSUnitTemplate ProjectileSpawnOffset"), Category = RTSUnitTemplate)
 	FVector ProjectileSpawnOffset = FVector(0.f,0.f,0.f);
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, meta = (DisplayName = "ProjectileSpawnSocketName", Keywords = "RTSUnitTemplate ProjectileSpawnSocketName"), Category = RTSUnitTemplate)
+	FName ProjectileSpawnSocketName = NAME_None;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, meta = (DisplayName = "ProjectileScale", Keywords = "RTSUnitTemplate ProjectileScale"), Category = RTSUnitTemplate)
 	FVector ProjectileScale = FVector(1.f,1.f,1.f);
@@ -408,11 +455,3 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = RTSUnitTemplate)
 	bool DetectFriendlyUnits = false;
 };
-
-
-
-
-
-
-
-

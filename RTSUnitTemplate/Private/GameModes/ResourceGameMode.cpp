@@ -390,16 +390,6 @@ void AResourceGameMode::AssignWorkAreasToWorker(AWorkingUnitBase* Worker)
 	TArray<AWorkArea*> WorkPlaces = GetFiveClosestResourcePlaces(Worker);
 	AWorkArea* WorkPlace = GetRandomClosestWorkArea(WorkPlaces);
 	Worker->ResourcePlace = WorkPlace;
-
-	if (Worker->ResourcePlace)
-	{
-		UE_LOG(LogTemp, Log, TEXT("Randomly assigned ResourcePlace: %s to Worker: %s"), *Worker->ResourcePlace->GetName(), *Worker->GetName());
-	}
-	else
-	{
-		// This case might occur if GetRandomClosestWorkArea can return nullptr
-		UE_LOG(LogTemp, Warning, TEXT("Failed to select a random resource place for Worker: %s"), *Worker->GetName());
-	}
 }
 
 ABuildingBase* AResourceGameMode::GetClosestBaseFromArray(AWorkingUnitBase* Worker, const TArray<ABuildingBase*>& Bases)
@@ -595,6 +585,27 @@ bool AResourceGameMode::ModifyResourceCCost(const FBuildingCost& ConstructionCos
 	CheckWinLoseCondition();
 
 	return true;
+}
+
+void AResourceGameMode::RefundResourceCost(const FBuildingCost& ConstructionCost, int32 TeamId)
+{
+	// Validate team and resources
+	if (TeamResources.Num() == 0 || TeamId < 0 || TeamId >= NumberOfTeams)
+		return;
+
+	// Refund resources (add back with positive values)
+	if (ConstructionCost.PrimaryCost > 0)
+		ModifyResource(EResourceType::Primary, TeamId, ConstructionCost.PrimaryCost);
+	if (ConstructionCost.SecondaryCost > 0)
+		ModifyResource(EResourceType::Secondary, TeamId, ConstructionCost.SecondaryCost);
+	if (ConstructionCost.TertiaryCost > 0)
+		ModifyResource(EResourceType::Tertiary, TeamId, ConstructionCost.TertiaryCost);
+	if (ConstructionCost.RareCost > 0)
+		ModifyResource(EResourceType::Rare, TeamId, ConstructionCost.RareCost);
+	if (ConstructionCost.EpicCost > 0)
+		ModifyResource(EResourceType::Epic, TeamId, ConstructionCost.EpicCost);
+	if (ConstructionCost.LegendaryCost > 0)
+		ModifyResource(EResourceType::Legendary, TeamId, ConstructionCost.LegendaryCost);
 }
 
 float AResourceGameMode::GetResource(int TeamId, EResourceType RType)
@@ -826,4 +837,22 @@ int32 AResourceGameMode::GetMaxWorkersForResourceType(int TeamId, EResourceType 
 		}
 	}
 	return 0;
+}
+
+bool AResourceGameMode::CanSpawnUnit(int32 TeamId, int32 PopulationCost) const
+{
+	// Default: no population limit
+	return true;
+}
+
+int32 AResourceGameMode::GetCurrentPopulation(int32 TeamId) const
+{
+	// Default: return 0 (no population tracking)
+	return 0;
+}
+
+int32 AResourceGameMode::GetMaxPopulation(int32 TeamId) const
+{
+	// Default: return very high number (no limit)
+	return INT32_MAX;
 }

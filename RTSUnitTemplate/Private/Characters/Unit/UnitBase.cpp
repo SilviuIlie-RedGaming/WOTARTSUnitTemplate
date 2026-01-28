@@ -10,6 +10,7 @@
 #include "Actors/Projectile.h"
 #include "Kismet/GameplayStatics.h"
 #include "Components/SkeletalMeshComponent.h"
+#include "Components/StaticMeshComponent.h"
 #include "Controller/AIController/BuildingControllerBase.h"
 #include "Controller/PlayerController/ControllerBase.h"
 #include "Controller/PlayerController/CustomControllerBase.h"
@@ -34,6 +35,9 @@
 #include "Mass/MassActorBindingComponent.h"
 #include "MassSignalSubsystem.h"
 #include "Mass/Signals/MySignals.h"
+#include "UI/Notifications/NotificationSubsystem.h"
+#include "Engine/GameInstance.h"
+#include "Characters/Unit/BuildingBase.h"
 
 AControllerBase* ControllerBase;
 // Sets default values
@@ -132,12 +136,67 @@ void AUnitBase::BeginPlay()
 	if (HasAuthority())
 	{
 		SetMeshRotationServer();
+		SetShootingMeshComponent();
 	}
 	
 	InitHealthbarOwner();
 }
 
+void AUnitBase::SetShootingMeshComponent()
+{
+	if (ProjectileSpawnSocketName != NAME_None)
+	{
+		// First check the main mesh component
+		if (USkeletalMeshComponent* MainMesh = GetMesh())
+		{
+			bool bShootingMeshCompFound = false;
+			if (MainMesh->DoesSocketExist(ProjectileSpawnSocketName))
+			{
+				ShootingMeshComponent = MainMesh;
+				bShootingMeshCompFound = true;
+			}
 
+			// If not found in main mesh, check components attached to the main mesh
+			if (!bShootingMeshCompFound)
+			{
+				// Check direct children of the main mesh
+				for (USceneComponent* ChildComp : MainMesh->GetAttachChildren())
+				{
+					if (!ChildComp) continue;
+
+					if (USkeletalMeshComponent* SkeletalMeshComp = Cast<USkeletalMeshComponent>(ChildComp))
+					{
+						if (SkeletalMeshComp->DoesSocketExist(ProjectileSpawnSocketName))
+						{
+							ShootingMeshComponent = SkeletalMeshComp;
+							break;
+						}
+					}
+					else if (UStaticMeshComponent* StaticMeshComp = Cast<UStaticMeshComponent>(ChildComp))
+					{
+						if (StaticMeshComp->DoesSocketExist(ProjectileSpawnSocketName))
+						{
+							ShootingMeshComponent = StaticMeshComp;
+							break;
+						}
+					}
+				}
+			}
+		}
+	}
+}
+
+FVector AUnitBase::GetShootingLocation() const
+{
+	if (ShootingMeshComponent)
+	{
+		return ShootingMeshComponent->GetSocketLocation(ProjectileSpawnSocketName);
+	}
+	else
+	{
+		return GetMassActorLocation();
+	}
+}
 
 void AUnitBase::InitHealthbarOwner()
 {
@@ -454,6 +513,13 @@ void AUnitBase::SetHealth_Implementation(float NewHealth)
 	
 	Attributes->SetAttributeHealth(NewHealth);
 	UpdateEntityHealth(NewHealth);
+
+	// Notify if this unit is taking damage (health decreased)
+	if (NewHealth < OldHealth && NewHealth > 0.f)
+	{
+		NotifyUnderAttack();
+	}
+
 	if(NewHealth <= 0.f)
 	{
 		SetWalkSpeed(0);
@@ -487,8 +553,6 @@ void AUnitBase::SetHealth_Implementation(float NewHealth)
 		DeadEffectsAndEvents();
 		UnitControlTimer = 0.f;
 	}
-
-	HealthbarCollapseCheck(NewHealth, OldHealth);
 }
 
 void AUnitBase::DeadMultiCast_Implementation()
@@ -746,52 +810,43 @@ void AUnitBase::SetTimerWidgetCastingColor(FLinearColor Color)
 	}
 }
 
-
 void AUnitBase::SpawnProjectile_Implementation(AActor* Target, AActor* Attacker) // FVector TargetLocation
 {
 	AUnitBase* ShootingUnit = Cast<AUnitBase>(Attacker);
 
-	if (!ProjectileBaseClass) return;
+	if (!ProjectileBaseClass || !ShootingUnit) return;
 
-	
-	
-	if(ShootingUnit)
+	FVector ShootingUnitLocation = ShootingUnit->GetShootingLocation();
+
+	FTransform Transform;
+	const FVector RotatedProjectileSpawnOffset = ShootingUnit->GetActorRotation().RotateVector(ProjectileSpawnOffset);
+	Transform.SetLocation(ShootingUnitLocation + Attributes->GetProjectileScaleActorDirectionOffset()*ShootingUnit->GetActorForwardVector() + RotatedProjectileSpawnOffset);
+
+
+	// 2) Figure out the exact world‐space "aim" point
+	FVector AimLocation = Target->GetActorLocation();
+	if (AUnitBase* UnitTarget = Cast<AUnitBase>(Target))
 	{
-
-
-
-		FVector ShootingUnitLocation = ShootingUnit->GetMassActorLocation(); 
+		if (!UnitTarget->bUseSkeletalMovement)
+			AimLocation = UnitTarget->GetMassActorLocation(); 
+	}
 		
-		FTransform Transform;
-		const FVector RotatedProjectileSpawnOffset = ShootingUnit->GetActorRotation().RotateVector(ProjectileSpawnOffset);
-		Transform.SetLocation(ShootingUnitLocation + Attributes->GetProjectileScaleActorDirectionOffset()*ShootingUnit->GetActorForwardVector() + RotatedProjectileSpawnOffset);
+	FVector Direction = (AimLocation - ShootingUnitLocation).GetSafeNormal();
+	FRotator InitialRotation = Direction.Rotation() + ProjectileRotationOffset;
 
-
-		// 2) Figure out the exact world‐space "aim" point
-		FVector AimLocation = Target->GetActorLocation();
-		if (AUnitBase* UnitTarget = Cast<AUnitBase>(Target))
-		{
-			if (!UnitTarget->bUseSkeletalMovement)
-				AimLocation = UnitTarget->GetMassActorLocation(); 
-		}
-		
-		FVector Direction = (AimLocation - ShootingUnitLocation).GetSafeNormal();
-		FRotator InitialRotation = Direction.Rotation() + ProjectileRotationOffset;
-
-		Transform.SetRotation(FQuat(InitialRotation));
-		Transform.SetScale3D(ShootingUnit->ProjectileScale);
+	Transform.SetRotation(FQuat(InitialRotation));
+	Transform.SetScale3D(ShootingUnit->ProjectileScale);
 
 		
-		const auto MyProjectile = Cast<AProjectile>
-							(UGameplayStatics::BeginDeferredActorSpawnFromClass
-							(this, ProjectileBaseClass, Transform,  ESpawnActorCollisionHandlingMethod::AlwaysSpawn));
-		if (MyProjectile != nullptr)
-		{
-			MyProjectile->Init(Target, Attacker);
-			MyProjectile->SetProjectileVisibility();
-			UGameplayStatics::FinishSpawningActor(MyProjectile, Transform);
-			MyProjectile->SetReplicates(true);
-		}
+	const auto MyProjectile = Cast<AProjectile>
+						(UGameplayStatics::BeginDeferredActorSpawnFromClass
+						(this, ProjectileBaseClass, Transform,  ESpawnActorCollisionHandlingMethod::AlwaysSpawn));
+	if (MyProjectile != nullptr)
+	{
+		MyProjectile->Init(Target, Attacker);
+		MyProjectile->SetProjectileVisibility();
+		UGameplayStatics::FinishSpawningActor(MyProjectile, Transform);
+		MyProjectile->SetReplicates(true);
 	}
 }
 
@@ -850,7 +905,7 @@ void AUnitBase::SpawnProjectileFromClass_Implementation(
             SpawnXf.SetLocation(
             ShootingUnitLocation
                 + Attributes->GetProjectileScaleActorDirectionOffset() * ShootingUnit->GetActorForwardVector()
-                + RotatedProjectileSpawnOffset + SpawnOffset
+                + RotatedProjectileSpawnOffset
             );
 
             const FVector Dir          = (LocationToShoot - ShootingUnitLocation).GetSafeNormal();
@@ -1404,5 +1459,77 @@ void AUnitBase::Multicast_UnregisterObstacle_Implementation()
 				NavSys->AddDirtyArea(BoundsToDirty, ENavigationDirtyFlag::All);
 			}
 		}
+	}
+}
+
+void AUnitBase::ResetUnderAttackNotification()
+{
+	bHasNotifiedUnderAttack = false;
+}
+
+void AUnitBase::NotifyUnderAttack()
+{
+	// Skip if already notified recently
+	if (bHasNotifiedUnderAttack)
+	{
+		return;
+	}
+
+	// Only notify for player's own units (check TeamId matches local player)
+	APlayerController* PC = GetWorld()->GetFirstPlayerController();
+	if (!PC)
+	{
+		return;
+	}
+
+	// Get player's team ID from controller
+	int32 PlayerTeamId = 1; // Default
+	if (ACustomControllerBase* CustomPC = Cast<ACustomControllerBase>(PC))
+	{
+		PlayerTeamId = CustomPC->SelectableTeamId;
+	}
+
+	// Only show notification for player's own units
+	if (TeamId != PlayerTeamId)
+	{
+		return;
+	}
+
+	// Get the notification subsystem
+	UGameInstance* GI = GetGameInstance();
+	if (!GI)
+	{
+		return;
+	}
+
+	UNotificationSubsystem* NotificationSubsystem = GI->GetSubsystem<UNotificationSubsystem>();
+	if (!NotificationSubsystem)
+	{
+		return;
+	}
+
+	// Mark as notified
+	bHasNotifiedUnderAttack = true;
+
+	// Determine if this is a building or a unit and show appropriate notification
+	if (Cast<ABuildingBase>(this))
+	{
+		NotificationSubsystem->ShowStructureUnderAttack(FText::FromString(Name), UnitIcon);
+	}
+	else
+	{
+		NotificationSubsystem->ShowUnitUnderAttack(FText::FromString(Name), UnitIcon);
+	}
+
+	// Set timer to reset the notification flag after cooldown
+	if (UWorld* World = GetWorld())
+	{
+		World->GetTimerManager().SetTimer(
+			UnderAttackNotificationTimerHandle,
+			this,
+			&AUnitBase::ResetUnderAttackNotification,
+			UnderAttackNotificationCooldown,
+			false
+		);
 	}
 }

@@ -23,15 +23,17 @@ void UMinimapWidget::InitializeForTeam(int32 TeamId)
     TArray<AActor*> FoundActors;
     UGameplayStatics::GetAllActorsOfClass(GetWorld(), AMinimapActor::StaticClass(), FoundActors);
 
-    for (AActor* Actor : FoundActors)
+    if (FoundActors.Num() > 0)
     {
-        AMinimapActor* MinimapActor = Cast<AMinimapActor>(Actor);
-        if (MinimapActor && MinimapActor->TeamId == PlayerTeamId)
-        {
-            MinimapActorRef = MinimapActor;
-            break; // Found our actor, no need to search further
-        }
+        MinimapActorRef = Cast<AMinimapActor>(FoundActors[0]);
     }
+
+    if (MinimapActorRef)
+    {
+        // Set TeamId dynamically from the owning player's team
+        MinimapActorRef->TeamId = TeamId;
+    }
+	
     if (MinimapActorRef && MinimapImage)
     {
         // 1. Erstellen Sie eine dynamische Instanz des Materials, das dem Image zugewiesen ist.
@@ -62,8 +64,6 @@ void UMinimapWidget::InitializeForTeam(int32 TeamId)
     }
     else
     {
-        UE_LOG(LogTemp, Warning, TEXT("MinimapWidget failed to find MinimapActor for Team ID %d or MinimapImage is not bound! Retrying..."), PlayerTeamId);
-        
         if (GetWorld() && !RetryTimerHandle.IsValid())
         {
             GetWorld()->GetTimerManager().SetTimer(RetryTimerHandle, this, &UMinimapWidget::RetryInitialize, 0.5f, true);
@@ -106,7 +106,6 @@ void UMinimapWidget::InitializeForTeam(int32 TeamId)
     }
     else
     {
-        UE_LOG(LogTemp, Error, TEXT("MinimapWidget failed to find MinimapActor for Team ID %d or MinimapImage is not bound!"), PlayerTeamId);
     }
 }
 */
@@ -229,20 +228,10 @@ FReply UMinimapWidget::NativeOnMouseButtonDown(const FGeometry& InGeometry, cons
 void UMinimapWidget::NativeTick(const FGeometry& MyGeometry, float InDeltaTime)
 {
     Super::NativeTick(MyGeometry, InDeltaTime);
-    // 1. Den Kamera-Pawn holen.
-    ACameraBase* CameraPawn = Cast<ACameraBase>(GetOwningPlayerPawn());
-    if (CameraPawn && MinimapImage)
+
+    if (MinimapImage)
     {
-        // 2. Den aktuellen Yaw-Winkel der Kamera über unsere neue Getter-Funktion abfragen.
-        const float CameraYaw = CameraPawn->SpringArmRotator.Yaw;
-
-        // 3. Den finalen Winkel für das Bild berechnen.
-        // Wir starten mit unserer Basis-Rotation von -90 Grad.
-        // Wenn die Kamera sich dreht, muss die Minimap sich "gegenläufig" drehen,
-        // damit die Ausrichtung wieder stimmt. Daher ziehen wir den Kamera-Yaw ab.
-        CurrentMapAngle = -90.0f - CameraYaw;
-
-        // 4. Den Rotationswinkel auf das Bild anwenden.
+        CurrentMapAngle = -90.0f;
         MinimapImage->SetRenderTransformAngle(CurrentMapAngle);
     }
 }
@@ -269,22 +258,8 @@ void UMinimapWidget::MoveCameraToMinimapLocation(const FVector2D& LocalMousePosi
     const float dx = LocalMousePosition.X - Center.X;
     const float dy = LocalMousePosition.Y - Center.Y;
 
-    // 3. Die "Gegen-Rotation" berechnen, um den Klick zu korrigieren.
-    // Wir nehmen den negativen Winkel, den wir im Tick berechnet haben.
-    const float AngleRad = FMath::DegreesToRadians(-CurrentMapAngle);
-    const float CosAngle = FMath::Cos(AngleRad);
-    const float SinAngle = FMath::Sin(AngleRad);
+    const FVector2D CorrectedLocalPosition(-dy + Center.X, dx + Center.Y);
 
-    // 4. Die volle 2D-Rotationsformel anwenden, um die korrigierte Position zu finden.
-    const float RotatedX_relative = dx * CosAngle - dy * SinAngle;
-    const float RotatedY_relative = dx * SinAngle + dy * CosAngle;
-
-    // 5. Die rotierten Koordinaten zurück in den lokalen Widget-Raum umrechnen.
-    const FVector2D CorrectedLocalPosition(RotatedX_relative + Center.X, RotatedY_relative + Center.Y);
-    
-    // --- ENDE DER DYNAMISCHEN LOGIK ---
-
-    // 6. Die finalen UVs berechnen (dieser Teil bleibt gleich).
     const float U = FMath::Clamp(CorrectedLocalPosition.X / WidgetSize.X, 0.f, 1.f);
     const float V = FMath::Clamp(CorrectedLocalPosition.Y / WidgetSize.Y, 0.f, 1.f);
 

@@ -21,12 +21,29 @@ UResourceWidget::UResourceWidget(const FObjectInitializer& ObjectInitializer)
 void UResourceWidget::NativeConstruct()
 {
     Super::NativeConstruct();
+
+    // Try to auto-detect TeamId from owning player controller
+    TryAutoDetectTeamId();
+
     // Try an initial population so the widget shows something even before SetTeamId is called.
     // This will be safely overwritten when SetTeamId is invoked later.
     PopulateResourceList();
     UpdateWidget();
 }
 
+void UResourceWidget::TryAutoDetectTeamId()
+{
+    if (APlayerController* PC = GetOwningPlayer())
+    {
+        if (AControllerBase* ControllerBase = Cast<AControllerBase>(PC))
+        {
+            if (ControllerBase->SelectableTeamId >= 0)
+            {
+                TeamId = ControllerBase->SelectableTeamId;
+            }
+        }
+    }
+}
 
 void UResourceWidget::SetTeamId(int32 Id)
 {

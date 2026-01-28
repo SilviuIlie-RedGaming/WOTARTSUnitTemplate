@@ -24,8 +24,16 @@ void USelectorButton::SetUnitSelectorId(int newID)
 
 	if(!ControllerBase) return;
 
-
-	if(!SelectUnit)
+	if (SelectUnit)
+	{
+		const int32 SelectedCount = ControllerBase->SelectedUnits.Num();
+		if (SelectedCount <= 1)
+		{
+			// Only 1 or 0 units selected, no need to reselect - skip everything
+			return;
+		}
+	}
+	else
 	{
 		if (!ToggleWidget)
 		{

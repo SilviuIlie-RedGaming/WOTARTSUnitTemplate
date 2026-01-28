@@ -304,6 +304,20 @@ struct FMassAIStateFragment : public FMassFragment
 	UPROPERTY(VisibleAnywhere, Category = "AI", Transient)
 	bool HoldPosition = false;
 	
+	// Defense point - position to return to when in Defensive stance after combat
+	UPROPERTY(VisibleAnywhere, Category = "AI", Transient)
+	FVector DefensePoint = FVector::ZeroVector;
+
+	UPROPERTY(VisibleAnywhere, Category = "AI", Transient)
+	bool bHasDefensePoint = false;
+
+	// Defense radius - how far unit can go from defense point before returning
+	UPROPERTY(EditAnywhere, Category = "AI")
+	float DefenseRadius = 600.f;
+
+	// Flag to indicate unit is returning to defense point and should not respond to attacks
+	UPROPERTY(VisibleAnywhere, Category = "AI", Transient)
+	bool bReturningToDefensePoint = false;
 };
 
 
@@ -367,6 +381,16 @@ struct FMassAITargetFragment : public FMassFragment
 	UPROPERTY(VisibleAnywhere, Category = "AI|Ability", Transient)
 	FVector AbilityTargetLocation = FVector::ZeroVector;
 
+	// Attack Ground support - unit attacks a ground location instead of a target entity
+	UPROPERTY(VisibleAnywhere, Category = "AI|AttackGround", Transient)
+	bool bHasAttackGroundTarget = false;
+
+	UPROPERTY(VisibleAnywhere, Category = "AI|AttackGround", Transient)
+	FVector AttackGroundLocation = FVector::ZeroVector;
+
+	// Current stance of the unit (synced from AUnitBase)
+	UPROPERTY(VisibleAnywhere, Category = "AI|Stance", Transient)
+	uint8 CurrentStance = 0; // 0=Aggressive, 1=Defensive, 2=Passive, 3=AttackGround
 
 	UPROPERTY(VisibleAnywhere, Category = "AI", Transient)
 	FMassEntityHandle FriendlyTargetEntity;

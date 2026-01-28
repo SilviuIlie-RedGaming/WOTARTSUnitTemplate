@@ -15,6 +15,8 @@
 
 class AUnitBase;
 class AWorkingUnitBase;
+class UWidgetComponent;
+class ABuildingBase;
 
 UCLASS()
 class RTSUNITTEMPLATE_API AWorkArea : public AActor
@@ -39,7 +41,7 @@ public:
 	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
 	
 	// Optional: if provided, a construction site will be spawned and tracked during build
- UPROPERTY(Replicated, EditAnywhere, BlueprintReadWrite, Category = Construction)
+	UPROPERTY(Replicated, EditAnywhere, BlueprintReadWrite, Category = Construction)
 	TSubclassOf<class AUnitBase> ConstructionUnitClass;
 	
 	// Pointer to the active construction site actor (if any)
@@ -107,7 +109,7 @@ public:
 	TSubclassOf<class AWorkResource> WorkResourceClass;
 	
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = RTSUnitTemplate)
-	TSubclassOf<class ABuildingBase> BuildingClass;
+	TSubclassOf<ABuildingBase> BuildingClass;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = RTSUnitTemplate)
 	TSubclassOf<class AAIController> BuildingController;
@@ -118,7 +120,7 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = RTSUnitTemplate)
 	float BuildTime = 5.f;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Worker)
+	UPROPERTY(Replicated, EditAnywhere, BlueprintReadWrite, Category = Worker)
 	float CurrentBuildTime = 0.0f;
 	
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = RTSUnitTemplate)
@@ -129,6 +131,12 @@ public:
 	
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = RTSUnitTemplate)
 	float BuildZOffset = 200.f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = RTSUnitTemplate)
+	float ArriveDistanceOffset = 5.f;
+
+	UFUNCTION(BlueprintCallable, Category = RTSUnitTemplate)
+	float GetArriveDistance() const;
 
 	// Tracks how much build progress has already been converted into health for the ConstructionUnit
  // Not replicated/persisted intentionally -- used only to compute additive health gains during build syncing
@@ -160,6 +168,10 @@ public:
 	
 	UFUNCTION(BlueprintImplementableEvent, Category = RTSUnitTemplate)
 	void StartedBuild();
+
+	UFUNCTION(BlueprintNativeEvent, Category = RTSUnitTemplate)
+	void FinishedBuild();
+	virtual void FinishedBuild_Implementation();
 
 	UFUNCTION(BlueprintImplementableEvent, Category = RTSUnitTemplate)
 	void StartedResourceExtraction();
@@ -233,6 +245,53 @@ public:
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = RTSUnitTemplate)
 	bool NeedsBeacon = false;
+
+	// ========== Build Progress Widget ==========
+
+	// Widget component to display build progress bar
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "RTSUnitTemplate|BuildWidget")
+	UWidgetComponent* BuildProgressWidgetComp;
+
+	// Widget class to use for the build progress bar (should be a UUnitTimerWidget-based widget)
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "RTSUnitTemplate|BuildWidget")
+	TSubclassOf<UUserWidget> BuildProgressWidgetClass;
+
+	// Offset for the build progress widget relative to the WorkArea
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "RTSUnitTemplate|BuildWidget")
+	FVector BuildProgressWidgetOffset = FVector(0.f, 0.f, 150.f);
+
+	// Color for the build progress bar
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "RTSUnitTemplate|BuildWidget")
+	FLinearColor BuildProgressColor = FLinearColor(0.f, 0.5f, 1.f, 1.f); // Blue
+
+	// Timer handle for updating the build progress widget
+	FTimerHandle BuildProgressTimerHandle;
+
+	// Update interval for the build progress widget (in seconds)
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "RTSUnitTemplate|BuildWidget")
+	float BuildProgressUpdateInterval = 0.1f;
+
+	// Initialize the build progress widget
+	UFUNCTION(BlueprintCallable, Category = "RTSUnitTemplate|BuildWidget")
+	void SetupBuildProgressWidget();
+
+	// Update the build progress widget display
+	void UpdateBuildProgressWidget();
+
+	UPROPERTY(Replicated)
+	TObjectPtr<AActor> SnappedTarget = nullptr;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "RTSUnitTemplate")
+	bool RequiresSnappedTargetToBuild = false;
+
+	UFUNCTION(BlueprintCallable, BlueprintPure, Category = "RTSUnitTemplate")
+	bool IsSnappedToTarget() const;
+
+	UFUNCTION(BlueprintImplementableEvent, Category = "RTSUnitTemplate")
+	void OnSnappedToTarget(AActor* Target);
+
+	UFUNCTION(BlueprintImplementableEvent, Category = "RTSUnitTemplate")
+	void OnUnSnappedFromTarget(AActor* Target);
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = RTSUnitTemplate)
 	bool AllowAddingWorkers = true;

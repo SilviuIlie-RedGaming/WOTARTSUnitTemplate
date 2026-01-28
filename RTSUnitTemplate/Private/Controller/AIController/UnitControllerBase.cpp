@@ -443,6 +443,15 @@ void AUnitControllerBase::Casting(AUnitBase* UnitBase, float DeltaSeconds)
 		if (UnitBase->ActivatedAbilityInstance)
 		{
 			UnitBase->ActivatedAbilityInstance->OnAbilityCastComplete();
+
+			// Now clear ActivatedAbilityInstance since the cast has completed
+			// Only clear if the queue is empty (otherwise the queue logic handles it)
+			if (UnitBase->AbilityQueue.IsEmpty())
+			{
+				UE_LOG(LogTemp, Warning, TEXT("SPAWNBUG - UnitController: Queue empty, clearing ActivatedAbilityInstance after OnAbilityCastComplete"));
+				UnitBase->ActivatedAbilityInstance = nullptr;
+				UnitBase->CurrentSnapshot = FQueuedAbility();
+			}
 		}
 		UnitBase->SetWalkSpeed(UnitBase->Attributes->GetRunSpeed());
 		UnitBase->UnitControlTimer = 0.f;

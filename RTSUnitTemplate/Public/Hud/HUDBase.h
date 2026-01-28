@@ -10,11 +10,10 @@
 #include "Blueprint/AIBlueprintHelperLibrary.h"
 #include "HUDBase.generated.h"
 
+class UUnitWidgetSelector;
+class UTaggedUnitSelector;
+class UResourceWidget;
 
-
-/**
- * 
- */
 UCLASS()
 class RTSUNITTEMPLATE_API AHUDBase : public AHUD
 {
@@ -89,7 +88,21 @@ public:
 		void SetUnitSelected(AUnitBase* Unit);
 
 	UFUNCTION(BlueprintCallable, meta = (DisplayName = "SetUnitSelected", Keywords = "RTSUnitTemplate SetUnitSelected"), Category = TopDownRTSTemplate)
-		void DeselectAllUnits();
+	void DeselectAllUnits();
+
+		// CTRL+click selection support
+	UFUNCTION(BlueprintCallable, Category = TopDownRTSTemplate)
+	void AddUnitToSelection(AUnitBase* Unit);
+
+	UFUNCTION(BlueprintCallable, Category = TopDownRTSTemplate)
+	void RemoveUnitFromSelection(AUnitBase* Unit);
+
+	UFUNCTION(BlueprintCallable, Category = TopDownRTSTemplate)
+	void ToggleUnitSelection(AUnitBase* Unit);
+
+	// When true, box selection adds to existing selection instead of replacing
+	UPROPERTY(BlueprintReadWrite, Category = RTSUnitTemplate)
+	bool bAddToSelection = false;
 
 	UFUNCTION(BlueprintCallable, Category = TopDownRTSTemplate)
 		void DetectUnit(AUnitBase* DetectingUnit, TArray<AActor*>& DetectedUnits, float Sight, float LoseSight, bool DetectFriendlyUnits, int PlayerTeamId);
@@ -99,6 +112,18 @@ public:
 
 	UFUNCTION(BlueprintCallable, meta = (DisplayName = "IsActorInsideRectangle", Keywords = "RTSUnitTemplate IsActorInsideRectangle"), Category = TopDownRTSTemplate)
 		bool IsActorInsideRec(FVector InPoint, FVector CuPoint, FVector ALocation);
+
+	// ---- Widget References (set these in your HUD Blueprint) ----
+		// These widgets will be automatically assigned to the camera pawn on spawn
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "RTSUnitTemplate|Widgets")
+	UUnitWidgetSelector* UnitSelectorWidget;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "RTSUnitTemplate|Widgets")
+	UTaggedUnitSelector* TaggedSelectorWidget;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "RTSUnitTemplate|Widgets")
+	UResourceWidget* ResourceWidget;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = RTSUnitTemplate)
 	FColor WPLineColor = FColor::Silver;

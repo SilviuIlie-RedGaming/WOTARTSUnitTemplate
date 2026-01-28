@@ -8,6 +8,8 @@
 #include "Characters/Unit/UnitBase.h"
 #include "Waypoint.generated.h"
 
+class UDecalComponent;
+
 UCLASS()
 class RTSUNITTEMPLATE_API AWaypoint : public AActor
 {
@@ -28,6 +30,9 @@ public:
 
 	UPROPERTY(Replicated, EditAnywhere, BlueprintReadWrite, Category = RTSUnitTemplate)
 	UNiagaraComponent* Niagara_A;
+
+	UPROPERTY(Replicated, EditAnywhere, BlueprintReadWrite, Category = RTSUnitTemplate)
+	UDecalComponent* AreaMarker = nullptr;
 	
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = RTSUnitTemplate)
 	FString Tag;
@@ -92,4 +97,7 @@ public:
 	
 	UFUNCTION(BlueprintCallable, Category = RTSUnitTemplate)
 		void OnPlayerEnter(UPrimitiveComponent* OverlapComponent, AActor* OtherActor, UPrimitiveComponent* OtherComponent, int32 OtherBodyIndex, bool bFromSweep, const FHitResult& SweepResult);
+
+	UFUNCTION(BlueprintCallable, Category = RTSUnitTemplate)
+	void SetWaypointVisibility(bool bVisible);
 };

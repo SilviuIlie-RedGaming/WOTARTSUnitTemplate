@@ -48,10 +48,6 @@ void AUnitRegistryReplicator::BeginPlay()
 		{
 			W->GetTimerManager().SetTimer(DiagnosticsTimerHandle, this, &AUnitRegistryReplicator::ServerDiagnosticsTick, 5.0f, true, 5.0f);
 		}
-		if (RegLogLevel() >= 1)
-		{
-			UE_LOG(LogTemp, Log, TEXT("[RTS.Registry] Reset NetID counter to 1 (world=%s)"), *GetWorld()->GetName());
-		}
 	}
 }
 
@@ -120,13 +116,6 @@ void AUnitRegistryReplicator::OnRep_Registry()
 				{
 					Unit->Destroy();
 					++Cleaned;
-				}
-			}
-			if (Cleaned > 0)
-			{
-				if (RegLogLevel() >= 2)
-				{
-					UE_LOG(LogTemp, Warning, TEXT("[RTS.Registry] Client reconcile destroyed %d zombie Units after registry update."), Cleaned);
 				}
 			}
 

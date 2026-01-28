@@ -39,6 +39,8 @@ protected:
 	void UpdateWidget();
 	
 	void PopulateResourceList();
+
+	void TryAutoDetectTeamId();
     
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = RTSUnitTemplate)
 	int32 TeamId;

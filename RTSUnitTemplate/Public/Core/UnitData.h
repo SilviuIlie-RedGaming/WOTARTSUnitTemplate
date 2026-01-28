@@ -55,6 +55,23 @@ namespace UnitData
 	};
 }
 
+// Unit stance determines how the unit behaves when idle or when given orders
+UENUM(BlueprintType)
+namespace UnitStanceData
+{
+	enum EStance : uint8
+	{
+		// Aggressive: Unit will chase and attack any enemy in sight range
+		Aggressive = 0 UMETA(DisplayName = "Aggressive"),
+		// Defensive: Unit holds position but attacks enemies that come into range
+		Defensive = 1 UMETA(DisplayName = "Defensive"),
+		// Passive: Unit will not attack unless explicitly ordered
+		Passive = 2 UMETA(DisplayName = "Passive"),
+		// AttackGround: Unit continuously attacks a specific ground location
+		AttackGround = 3 UMETA(DisplayName = "AttackGround"),
+	};
+}
+
 UENUM(BlueprintType)
 enum class EWinLoseCondition : uint8
 {
