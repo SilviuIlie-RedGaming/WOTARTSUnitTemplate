@@ -95,6 +95,7 @@ void AExtendedControllerBase::Tick(float DeltaSeconds)
 	MoveDraggedUnit_Implementation(DeltaSeconds);
 	MoveWorkArea_Local(DeltaSeconds);
 	MoveAbilityIndicator_Local(DeltaSeconds);
+	UpdateExtractionSounds(DeltaSeconds);
 }
 
 void AExtendedControllerBase::LogSelectedUnitsTags()
@@ -444,6 +445,9 @@ void AExtendedControllerBase::ActivateKeyboardAbilitiesOnCloseUnits(EGASAbilityI
 
 void AExtendedControllerBase::ActivateKeyboardAbilitiesOnMultipleUnits(EGASAbilityInputID InputID)
 {
+
+	if (AltIsPressed) return;
+	if (IsCtrlPressed) return;
 	
 	FHitResult Hit;
 	GetHitResultUnderCursor(ECollisionChannel::ECC_Visibility, false, Hit);
@@ -457,20 +461,29 @@ void AExtendedControllerBase::ActivateKeyboardAbilitiesOnMultipleUnits(EGASAbili
 	bool bActivatedAny = false;
 	if (SelectedUnits.Num() > 0)
 	{
-		if (SelectedUnits[CurrentUnitWidgetIndex]->IsWorker && SelectedUnits[CurrentUnitWidgetIndex]->CanActivateAbilities)
+		// Validate CurrentUnitWidgetIndex is within bounds
+		if (CurrentUnitWidgetIndex < 0 || CurrentUnitWidgetIndex >= SelectedUnits.Num())
 		{
-			ActivateAbilitiesByIndex_Implementation(SelectedUnits[CurrentUnitWidgetIndex], InputID, Hit);
+			CurrentUnitWidgetIndex = 0;
+		}
+		
+		AUnitBase* CurrentUnit = SelectedUnits[CurrentUnitWidgetIndex];
+		
+		// Check if the current unit is valid before accessing its properties
+		if (CurrentUnit && CurrentUnit->IsWorker && CurrentUnit->CanActivateAbilities)
+		{
+			ActivateAbilitiesByIndex_Implementation(CurrentUnit, InputID, Hit);
 			bActivatedAny = true;
-			HUDBase->SetUnitSelected(SelectedUnits[CurrentUnitWidgetIndex]);
+			HUDBase->SetUnitSelected(CurrentUnit);
 			CurrentUnitWidgetIndex = 0;
 			SelectedUnits = HUDBase->SelectedUnits;
-		}else{
+		}else if (CurrentUnit) {
 			bool bAnyHasTag = false;
 
 			
 			for (AUnitBase* SelectedUnit : SelectedUnits)
 			{
-				if (SelectedUnit && SelectedUnit->CanActivateAbilities && !SelectedUnit->IsWorker &&  SelectedUnit->AbilitySelectionTag == SelectedUnits[CurrentUnitWidgetIndex]->AbilitySelectionTag)
+				if (SelectedUnit && SelectedUnit->CanActivateAbilities && !SelectedUnit->IsWorker && SelectedUnit->AbilitySelectionTag == CurrentUnit->AbilitySelectionTag)
 				{
 					bAnyHasTag = true;
 					ActivateAbilitiesByIndex_Implementation(SelectedUnit, InputID, Hit);
@@ -513,49 +526,29 @@ void AExtendedControllerBase::ActivateKeyboardAbilitiesOnMultipleUnits(EGASAbili
 	}
 }
 
-void AExtendedControllerBase::SetWorkAreaPosition_Implementation(AWorkArea* DraggedArea, FVector NewActorPosition)
+void AExtendedControllerBase::SetWorkAreaPosition_Implementation(AWorkArea* DraggedArea, FTransform NewActorTransform)
 {
    if (!DraggedArea) return;
 	
     UStaticMeshComponent* MeshComponent = DraggedArea->FindComponentByClass<UStaticMeshComponent>();
     if (!MeshComponent)
     {
-        DraggedArea->SetActorLocation(NewActorPosition);
+        DraggedArea->SetActorTransform(NewActorTransform);
         return;
     }
 
-    // 1) Zunächst nur XY setzen, Z bleibt unverändert (oder so, wie es reinkommt)
-    FVector TempLocation = FVector(NewActorPosition.X, NewActorPosition.Y, NewActorPosition.Z);
-    DraggedArea->SetActorLocation(TempLocation);
+    // 1) Apply transform (Location and Rotation)
+    DraggedArea->SetActorTransform(NewActorTransform);
 	
-    // 2) Bounds neu holen (jetzt mit richtiger Weltposition)
+    // 2) Bounds neu holen (jetzt mit richtiger Weltposition und Rotation)
     FBoxSphereBounds MeshBounds = MeshComponent->Bounds;
     // „halbe Höhe“ des Meshes (inkl. Scale & Rotation, da in Weltkoordinaten)
     float HalfHeight = MeshBounds.BoxExtent.Z;
 
-	/*
-    // Nur zum Debuggen
-    DrawDebugBox(
-        GetWorld(),
-        MeshBounds.Origin,
-        MeshBounds.BoxExtent,
-        FColor::Yellow,
-        false,  // bPersistentLines
-        5.0f    // Lebensdauer in Sekunden
-    );
-    DrawDebugPoint(
-        GetWorld(),
-        MeshBounds.Origin,
-        20.f,
-        FColor::Green,
-        false,
-        5.0f
-    );*/
-
     // 3) LineTrace von etwas über dem Bodensatz des Meshes nach unten
     FVector MeshBottomWorld = MeshBounds.Origin - FVector(0.f, 0.f, HalfHeight);
     FVector TraceStart = MeshBottomWorld + FVector(0.f, 0.f, 1000.f);
-    FVector TraceEnd   = MeshBottomWorld - FVector(0.f, 0.f, 5000.f);
+    FVector TraceEnd   = MeshBottomWorld - FVector(0.f, 0.f, 100000.f);
 
     FHitResult HitResult;
     FCollisionQueryParams TraceParams(FName(TEXT("WorkAreaGroundTrace")), true, DraggedArea);
@@ -574,13 +567,14 @@ void AExtendedControllerBase::SetWorkAreaPosition_Implementation(AWorkArea* Drag
         const int32 MaxTries = 8;
         int32 Tries = 0;
         bool bFoundLandscape = false;
+        FVector AdjustedLocation = NewActorTransform.GetLocation();
         while (Tries < MaxTries && GetWorld()->LineTraceSingleByChannel(LocalHit, LocalStart, LocalEnd, ECC_Visibility, LocalParams))
         {
             if (LocalHit.GetActor() && LocalHit.GetActor()->IsA(ALandscape::StaticClass()))
             {
                 // Setze die neue Z-Position so, dass MeshBottomWorld auf dem Boden liegt
                 float DeltaZ = LocalHit.ImpactPoint.Z - MeshBottomWorld.Z;
-                NewActorPosition.Z += DeltaZ;
+                AdjustedLocation.Z += DeltaZ;
                 bFoundLandscape = true;
                 break;
             }
@@ -588,29 +582,23 @@ void AExtendedControllerBase::SetWorkAreaPosition_Implementation(AWorkArea* Drag
             LocalStart = LocalHit.ImpactPoint - FVector(0.f, 0.f, 1.f);
             ++Tries;
         }
-        if (!bFoundLandscape)
+        if (bFoundLandscape)
+        {
+            DraggedArea->SetActorLocation(AdjustedLocation);
+        }
+        else
         {
             UE_LOG(LogTemp, Warning, TEXT("SetWorkAreaPosition_Implementation: Kein Landscape-Boden getroffen!"));
         }
     }
 	
-    // 4) Schlussendlich Actor anpassen
-    DraggedArea->SetActorLocation(NewActorPosition);
 	DraggedArea->ForceNetUpdate();
 }
 
-void AExtendedControllerBase::Server_FinalizeWorkAreaPosition_Implementation(AWorkArea* DraggedArea, FVector NewActorPosition)
+void AExtendedControllerBase::BroadcastWorkAreaPositionToTeam(AWorkArea* DraggedArea, const FTransform& FinalTransform, AUnitBase* UnitBase)
 {
 	if (!DraggedArea) return;
-	// Compute grounded position on the server to ensure mesh bottom sits on ground
-	const FVector Grounded = ComputeGroundedLocation(DraggedArea, NewActorPosition);
-	DraggedArea->SetActorLocation(Grounded);
-	DraggedArea->ForceNetUpdate();
-
-	// Inform all clients (legacy behavior)
-	Multicast_ApplyWorkAreaPosition(DraggedArea, Grounded);
-
-	// Additionally, explicitly update clients that share the same TeamId as the WorkArea
+	
 	UWorld* World = GetWorld();
 	if (World)
 	{
@@ -623,22 +611,61 @@ void AExtendedControllerBase::Server_FinalizeWorkAreaPosition_Implementation(AWo
 			// Compare the controller's selectable team against the WorkArea's team
 			if (ExtPC->SelectableTeamId == DraggedArea->TeamId)
 			{
-				ExtPC->Client_UpdateWorkAreaPosition(DraggedArea, Grounded);
+				ExtPC->Client_UpdateWorkAreaPosition(DraggedArea, FinalTransform, UnitBase);
 			}
 		}
 	}
 }
 
-void AExtendedControllerBase::Multicast_ApplyWorkAreaPosition_Implementation(AWorkArea* DraggedArea, FVector NewActorPosition)
+void AExtendedControllerBase::Server_FinalizeWorkAreaPosition_Implementation(AWorkArea* DraggedArea, FTransform NewActorTransform, AUnitBase* UnitBase)
 {
 	if (!DraggedArea) return;
-	DraggedArea->SetActorLocation(NewActorPosition);
+
+	FTransform FinalTransform = NewActorTransform;
+
+	if (!DraggedArea->IsExtensionArea)
+	{
+		// Compute grounded position on the server to ensure mesh bottom sits on ground
+		FinalTransform.SetLocation(ComputeGroundedLocation(DraggedArea, NewActorTransform.GetLocation()));
+	}
+	
+	// Only delay if both IsExtensionArea and InstantDrop are true
+	if (DraggedArea->IsExtensionArea && DraggedArea->InstantDrop)
+	{
+		// Delay the client update by 1 second
+		FTimerHandle TimerHandle;
+		TWeakObjectPtr<AWorkArea> WeakDraggedArea = DraggedArea;
+		TWeakObjectPtr<AUnitBase> WeakUnitBase = UnitBase;
+		
+		GetWorldTimerManager().SetTimer(TimerHandle, [this, WeakDraggedArea, FinalTransform, WeakUnitBase]()
+		{
+			if (!WeakDraggedArea.IsValid()) return;
+			BroadcastWorkAreaPositionToTeam(WeakDraggedArea.Get(), FinalTransform, WeakUnitBase.Get());
+		}, 1.0f, false);
+	}
+	else
+	{
+		// Execute immediately without delay
+		BroadcastWorkAreaPositionToTeam(DraggedArea, FinalTransform, UnitBase);
+	}
 }
 
-void AExtendedControllerBase::Client_UpdateWorkAreaPosition_Implementation(AWorkArea* DraggedArea, FVector NewActorPosition)
+void AExtendedControllerBase::Multicast_ApplyWorkAreaPosition_Implementation(AWorkArea* DraggedArea, FTransform NewActorTransform, AUnitBase* UnitBase)
 {
 	if (!DraggedArea) return;
-	DraggedArea->SetActorLocation(NewActorPosition);
+
+	DraggedArea->SetActorTransform(NewActorTransform);
+
+	//UnitBase->ShowWorkAreaIfNoFog(DraggedArea);
+}
+
+void AExtendedControllerBase::Client_UpdateWorkAreaPosition_Implementation(AWorkArea* DraggedArea, FTransform NewActorTransform, AUnitBase* UnitBase)
+{
+	if (!DraggedArea) return;
+	DraggedArea->SetActorTransform(NewActorTransform);
+
+	UnitBase->ShowWorkAreaIfNoFog_Implementation(DraggedArea);
+	
 }
 
 FVector AExtendedControllerBase::ComputeGroundedLocation(AWorkArea* DraggedArea, const FVector& DesiredLocation) const
@@ -827,7 +854,7 @@ void AExtendedControllerBase::SnapToActor(AWorkArea* DraggedActor, AActor* Other
             if (DeprojectMousePositionToWorld(MousePos, MouseDir))
             {
                 const FVector TraceStart = MousePos;
-                const FVector TraceEnd = TraceStart + MouseDir * 5000.f;
+                const FVector TraceEnd = TraceStart + MouseDir * 1000000.f;
                 FCollisionQueryParams Params;
                 for (TActorIterator<AWorkArea> It(GetWorld()); It; ++It)
                 {
@@ -1076,7 +1103,7 @@ bool AExtendedControllerBase::TraceMouseToGround(FVector& OutMouseGround, FHitRe
     }
 
     const FVector Start = MousePosition;
-    const FVector End = Start + MouseDirection * 5000.f;
+    const FVector End = Start + MouseDirection * 1000000.f;
 
     FCollisionQueryParams Params(SCENE_QUERY_STAT(MoveWorkAreaTrace), true);
     Params.bTraceComplex = true;
@@ -1404,7 +1431,7 @@ bool AExtendedControllerBase::MoveWorkArea_Local_Simplified(float DeltaSeconds)
     AWorkArea* DraggedWorkArea = SelectedUnits[0]->CurrentDraggedWorkArea;
     if (!DraggedWorkArea) return true;
 
-    SelectedUnits[0]->ShowWorkAreaIfNoFog(DraggedWorkArea);
+    SelectedUnits[0]->ShowWorkAreaIfNoFog_Implementation(DraggedWorkArea);
 
     FVector MouseGround; FHitResult HitResult;
     if (!TraceMouseToGround(MouseGround, HitResult)) return true;
@@ -1709,15 +1736,21 @@ bool AExtendedControllerBase::MoveWorkArea_Local_Simplified(float DeltaSeconds)
 void AExtendedControllerBase::MoveWorkArea_Local(float DeltaSeconds)
 {
     // Ensure we have a unit and a dragged work area
-    if (SelectedUnits.Num() == 0 || !SelectedUnits[0]) { return; }
+    if (SelectedUnits.Num() == 0 || !SelectedUnits[0])
+    {
+        return;
+    }
     AWorkArea* DraggedWorkArea = SelectedUnits[0]->CurrentDraggedWorkArea;
-    if (!DraggedWorkArea) { return; }
+    if (!DraggedWorkArea)
+    {
+        return;
+    }
 
     // Special handling for Extension Areas: mimic UExtensionAbility::UpdatePreviewFollow
     if (DraggedWorkArea->IsExtensionArea)
     {
         ABuildingBase* Unit = Cast<ABuildingBase>(SelectedUnits[0]);
-    	Unit->ShowWorkAreaIfNoFog(DraggedWorkArea);
+    	Unit->ShowWorkAreaIfNoFog_Implementation(DraggedWorkArea);
         // Determine mouse world hit
         FHitResult Hit;
         if (!GetHitResultUnderCursor(ECC_Visibility, false, Hit))
@@ -1731,7 +1764,7 @@ void AExtendedControllerBase::MoveWorkArea_Local(float DeltaSeconds)
         FVector UnitCenterBounds(0.f, 0.f, 0.f), UnitExtentBounds(100.f, 100.f, 100.f);
         GetActorBoundsForSnap(Unit, UnitCenterBounds, UnitExtentBounds);
 
-   		if (Unit->ExtensionOffset.Z == 0.f)
+   		if (Unit->ExtensionDominantSideSelection)
    		{
    			// Axis-dominant side selection relative to mouse position
    			const FVector2D Delta2D(Hit.Location.X - UnitLoc.X, Hit.Location.Y - UnitLoc.Y);
@@ -1758,13 +1791,13 @@ void AExtendedControllerBase::MoveWorkArea_Local(float DeltaSeconds)
    			const FRotator NewRot(0.f, DesiredYaw, 0.f);
    			DraggedWorkArea->SetActorRotation(NewRot);
    			DraggedWorkArea->ServerMeshRotationBuilding = NewRot;
-   		}if (Unit->ExtensionOffset.Z < 0.f)
+   		}else
    		{
    			TargetLoc.X += Unit->ExtensionOffset.X;
    			TargetLoc.Y += Unit->ExtensionOffset.Y;
    		}
 
-   		if (Unit->ExtensionOffset.Z <= 0.f)
+   		if (Unit->ExtensionGroundTrace)
    		{
    			// Ground align: trace down while ignoring the unit, the dragged area, and any WorkAreas/Buildings under the cursor
    			const FVector TraceStart = TargetLoc + FVector(0, 0, 2000.f);
@@ -1798,8 +1831,6 @@ void AExtendedControllerBase::MoveWorkArea_Local(float DeltaSeconds)
    		}else
     	{
    			TargetLoc.Z += Unit->ExtensionOffset.Z + UnitExtentBounds.Z;
-    		TargetLoc.X += Unit->ExtensionOffset.X;
-    		TargetLoc.Y += Unit->ExtensionOffset.Y;
     	}
 
         // Adjust Z so the mesh bottom sits exactly on the ground plus a small clearance
@@ -1863,8 +1894,15 @@ void AExtendedControllerBase::MoveWorkArea_Local(float DeltaSeconds)
         }
 
         DraggedWorkArea->SetActorLocation(TargetLoc);
+
+		if (DraggedWorkArea->InstantDrop)
+		{
+			Server_DropWorkAreaForUnit(Unit, true, DropWorkAreaFailedSound, DraggedWorkArea->GetActorTransform());
+		}
+    	
         return;
     }
+
 
     // Non-extension areas: use simplified path first
     if (MoveWorkArea_Local_Simplified(DeltaSeconds))
@@ -1872,14 +1910,14 @@ void AExtendedControllerBase::MoveWorkArea_Local(float DeltaSeconds)
         return;
     }
 
-    SelectedUnits[0]->ShowWorkAreaIfNoFog(DraggedWorkArea);
+    SelectedUnits[0]->ShowWorkAreaIfNoFog_Implementation(DraggedWorkArea);
 	
     FVector MousePosition, MouseDirection;
     DeprojectMousePositionToWorld(MousePosition, MouseDirection);
 
     // Raycast from the mouse into the scene
     FVector Start = MousePosition;
-    FVector End   = Start + MouseDirection * 5000.f;
+    FVector End   = Start + MouseDirection * 1000000.f;
 
     FHitResult HitResult;
     FCollisionQueryParams CollisionParams;
@@ -2248,7 +2286,7 @@ void AExtendedControllerBase::MoveWorkArea_Local(float DeltaSeconds)
 }
 
 
-void AExtendedControllerBase::SetWorkArea(FVector AreaLocation)
+void AExtendedControllerBase::SetWorkArea(FTransform AreaTransform)
 {
     // Sanity check that we have at least one "SelectedUnit"
     if (SelectedUnits.Num() == 0 || !SelectedUnits[0])
@@ -2262,8 +2300,9 @@ void AExtendedControllerBase::SetWorkArea(FVector AreaLocation)
         return;
     }
 	
-	SelectedUnits[0]->ShowWorkAreaIfNoFog(DraggedWorkArea);
+	SelectedUnits[0]->ShowWorkAreaIfNoFog_Implementation(DraggedWorkArea);
 
+    const FVector AreaLocation = AreaTransform.GetLocation();
     // Raycast from the mouse into the scene
     FVector Start = AreaLocation+FVector(0.f, 0.f, 1000.f);
     FVector End   = AreaLocation-FVector(0.f, 0.f, 1000.f);
@@ -2690,7 +2729,11 @@ void AExtendedControllerBase::MoveAbilityIndicator_Local(float DeltaSeconds)
         {
             if (!Candidate || Candidate == CurrentIndicator) return;
             // Do not consider the owner unit/building as a blocking/snap target
-            if (Candidate == Unit) return;
+            if (CurrentIndicator->bIgnoreHoldingUnitInDistanceCheck)
+            {
+                if (Candidate == Unit) return;
+                if (ABuildingBase* OwnerBuilding = Cast<ABuildingBase>(Unit)) { if (Candidate == OwnerBuilding) return; }
+            }
             FVector OtherCenter, OtherExtent;
             if (!GetActorBoundsForSnap(Candidate, OtherCenter, OtherExtent)) return;
             const float OtherXY = FMath::Max(OtherExtent.X, OtherExtent.Y);
@@ -2765,8 +2808,11 @@ void AExtendedControllerBase::MoveAbilityIndicator_Local(float DeltaSeconds)
                 {
                     if (!N) continue;
                     // Do not be blocked by the owning unit/building
-                    if (N == Unit) continue;
-                    if (ABuildingBase* OwnerBuilding = Cast<ABuildingBase>(Unit)) { if (N == OwnerBuilding) continue; }
+                    if (CurrentIndicator->bIgnoreHoldingUnitInDistanceCheck)
+                    {
+                        if (N == Unit) continue;
+                        if (ABuildingBase* OwnerBuilding = Cast<ABuildingBase>(Unit)) { if (N == OwnerBuilding) continue; }
+                    }
                     FVector NC, NE; if (!GetActorBoundsForSnap(N, NC, NE)) continue;
                     const float NR = FMath::Max(NE.X, NE.Y);
                     float Required = DragR + NR + SnapGap;
@@ -2807,6 +2853,11 @@ void AExtendedControllerBase::MoveAbilityIndicator_Local(float DeltaSeconds)
                 for (AActor* N : Neighbors)
                 {
                     if (!N) continue;
+                    if (CurrentIndicator->bIgnoreHoldingUnitInDistanceCheck)
+                    {
+                        if (N == Unit) continue;
+                        if (ABuildingBase* OwnerBuilding = Cast<ABuildingBase>(Unit)) { if (N == OwnerBuilding) continue; }
+                    }
                     FVector NC, NE; if (!GetActorBoundsForSnap(N, NC, NE)) continue;
                     const float NR = FMath::Max(NE.X, NE.Y);
                     const float Required = DragR + NR + SnapGap;
@@ -2893,8 +2944,41 @@ void AExtendedControllerBase::Server_SpawnExtensionConstructionUnit_Implementati
 	AUnitBase* NewConstruction = World->SpawnActorDeferred<AUnitBase>(WA->ConstructionUnitClass, SpawnTM, nullptr, nullptr, ESpawnActorCollisionHandlingMethod::AlwaysSpawn);
 	if (NewConstruction)
 	{
-		NewConstruction->FlyHeight = WA->GetActorLocation().Z;
+		// Ground trace at the area center to find floor Z
+		FBox AreaBox = WA->Mesh ? WA->Mesh->Bounds.GetBox() : WA->GetComponentsBoundingBox(true);
+		const FVector AreaCenter = AreaBox.GetCenter();
+		const FVector AreaSize = AreaBox.GetSize();
+		FHitResult Hit;
+		FVector Start = AreaCenter + FVector(0, 0, 10000.f);
+		FVector End = AreaCenter - FVector(0, 0, 10000.f);
+		FCollisionQueryParams Params;
+		Params.AddIgnoredActor(WA);
+		Params.AddIgnoredActor(NewConstruction);
+		Params.AddIgnoredActor(Unit);
+		bool bHit = GetWorld()->LineTraceSingleByChannel(Hit, Start, End, ECC_Visibility, Params);
+		float GroundZ = bHit ? Hit.Location.Z : WA->GetActorLocation().Z;
+
+		NewConstruction->FlyHeight = WA->GetActorLocation().Z - GroundZ;
 		NewConstruction->TeamId = Unit->TeamId;
+
+		// Ensure every runtime-spawned construction unit gets a unique UnitIndex on the server
+		// (level-placed units are assigned in ARTSGameModeBase::FillUnitArrays).
+		if (ARTSGameModeBase* GM = World->GetAuthGameMode<ARTSGameModeBase>())
+		{
+			if (NewConstruction->UnitIndex <= 0)
+			{
+				GM->AddUnitIndexAndAssignToAllUnitsArrayWithIndex(NewConstruction, INDEX_NONE, FUnitSpawnParameter());
+			}
+			else
+			{
+				// Make sure the unit is tracked by the authoritative unit list as well
+				if (!GM->AllUnits.Contains(NewConstruction))
+				{
+					GM->AllUnits.Add(NewConstruction);
+				}
+			}
+		}
+
 		if (WA->BuildingClass)
 		{
 			if (ABuildingBase* BuildingCDO = WA->BuildingClass->GetDefaultObject<ABuildingBase>())
@@ -2918,17 +3002,6 @@ void AExtendedControllerBase::Server_SpawnExtensionConstructionUnit_Implementati
 		NewConstruction->SetMeshRotationServer();
 		// Fit/ground-align and visuals same as before
 			{
-				FBox AreaBox = WA->Mesh ? WA->Mesh->Bounds.GetBox() : WA->GetComponentsBoundingBox(true);
-				const FVector AreaCenter = AreaBox.GetCenter();
-				const FVector AreaSize = AreaBox.GetSize();
-				FHitResult Hit;
-				FVector Start = AreaCenter + FVector(0, 0, 10000.f);
-				FVector End = AreaCenter - FVector(0, 0, 10000.f);
-				FCollisionQueryParams Params;
-				Params.AddIgnoredActor(WA);
-				Params.AddIgnoredActor(NewConstruction);
-				bool bHit = GetWorld()->LineTraceSingleByChannel(Hit, Start, End, ECC_Visibility, Params);
-				float GroundZ = bHit ? Hit.Location.Z : NewConstruction->GetActorLocation().Z;
 				FBox PreBox = NewConstruction->GetComponentsBoundingBox(true);
 				FVector UnitSize = PreBox.GetSize();
 				if (!UnitSize.IsNearlyZero(1e-3f) && AreaSize.X > KINDA_SMALL_NUMBER && AreaSize.Y > KINDA_SMALL_NUMBER)
@@ -3079,7 +3152,6 @@ bool AExtendedControllerBase::DropWorkArea()
 	if(SelectedUnits.Num() && SelectedUnits[0])
 	if (SelectedUnits[0]->CurrentDraggedWorkArea && SelectedUnits[0]->CurrentDraggedWorkArea->PlannedBuilding == false)
 	{
-		SelectedUnits[0]->ShowWorkAreaIfNoFog(SelectedUnits[0]->CurrentDraggedWorkArea);
 		// Get all actors overlapping with the CurrentDraggedWorkArea
 		TArray<AActor*> OverlappingActors;
 		SelectedUnits[0]->CurrentDraggedWorkArea->GetOverlappingActors(OverlappingActors);
@@ -3142,11 +3214,11 @@ bool AExtendedControllerBase::DropWorkArea()
 				Client_PlaySound2D(DropWorkAreaSound);
 			}
 	
-				// Finalize placement on the server now that the player dropped the area
+ 			// Finalize placement on the server now that the player dropped the area
 				if (SelectedUnits[0]->CurrentDraggedWorkArea)
 				{
 					Server_FinalizeWorkAreaPosition(SelectedUnits[0]->CurrentDraggedWorkArea,
-						SelectedUnits[0]->CurrentDraggedWorkArea->GetActorLocation());
+						SelectedUnits[0]->CurrentDraggedWorkArea->GetActorTransform(), SelectedUnits[0]);
 				}
 				// If this is an extension area, spawn its ConstructionUnit now on the server
 				SendWorkerToWork(SelectedUnits[0]);
@@ -3156,7 +3228,10 @@ bool AExtendedControllerBase::DropWorkArea()
 
 		if (SelectedUnits[0]->CurrentDraggedWorkArea && SelectedUnits[0]->CurrentDraggedWorkArea->IsExtensionArea)
 		{
+			Server_FinalizeWorkAreaPosition(SelectedUnits[0]->CurrentDraggedWorkArea,
+			SelectedUnits[0]->CurrentDraggedWorkArea->GetActorTransform(), SelectedUnits[0]);
 			Server_SpawnExtensionConstructionUnit(SelectedUnits[0], SelectedUnits[0]->CurrentDraggedWorkArea);
+			SetAbilityEnabledByKey(SelectedUnits[0], "ExtensionAbility", false);
 			return true;
 		}
 	}
@@ -3194,11 +3269,7 @@ bool AExtendedControllerBase::DropWorkAreaForUnit(AUnitBase* UnitBase, bool bWor
 
 	if (UnitBase->CurrentDraggedWorkArea && UnitBase->CurrentDraggedWorkArea->PlannedBuilding == false)
 	{
-
-		UnitBase->ShowWorkAreaIfNoFog(UnitBase->CurrentDraggedWorkArea);
-
 		TArray<AActor*> OverlappingActors;
-		UnitBase->CurrentDraggedWorkArea->GetOverlappingActors(OverlappingActors);
 
 		bool bIsOverlappingWithValidArea = false;
 		bool bIsNoBuildZone = false;
@@ -3258,10 +3329,10 @@ bool AExtendedControllerBase::DropWorkAreaForUnit(AUnitBase* UnitBase, bool bWor
 				Client_PlaySound2D(DropWorkAreaSound);
 			}
 
-			if (UnitBase->CurrentDraggedWorkArea)
+ 		if (UnitBase->CurrentDraggedWorkArea)
 			{
 				Server_FinalizeWorkAreaPosition(UnitBase->CurrentDraggedWorkArea,
-					UnitBase->CurrentDraggedWorkArea->GetActorLocation());
+					UnitBase->CurrentDraggedWorkArea->GetActorTransform(), UnitBase);
 			}
 			// If this is an extension area, spawn its ConstructionUnit now on the server
 			SendWorkerToWork(UnitBase);
@@ -3271,12 +3342,23 @@ bool AExtendedControllerBase::DropWorkAreaForUnit(AUnitBase* UnitBase, bool bWor
 
 		if (UnitBase->CurrentDraggedWorkArea && UnitBase->CurrentDraggedWorkArea->IsExtensionArea)
 		{
+			Server_FinalizeWorkAreaPosition(UnitBase->CurrentDraggedWorkArea,
+				UnitBase->CurrentDraggedWorkArea->GetActorTransform(), UnitBase);
 			Server_SpawnExtensionConstructionUnit(UnitBase, UnitBase->CurrentDraggedWorkArea);
 			SetAbilityEnabledByKey(UnitBase, "ExtensionAbility", false);
 			return true;
 		}
 	}
 	return false;
+}
+
+void AExtendedControllerBase::Server_DropWorkAreaForUnit_Implementation(AUnitBase* UnitBase, bool bWorkAreaIsSnapped, USoundBase* InDropWorkAreaFailedSound, FTransform ClientWorkAreaTransform)
+{
+	if (!UnitBase || !UnitBase->CurrentDraggedWorkArea || UnitBase->CurrentDraggedWorkArea->AreaDropped) return;
+	
+	UnitBase->CurrentDraggedWorkArea->AreaDropped = true;
+	UnitBase->CurrentDraggedWorkArea->SetActorTransform(ClientWorkAreaTransform);
+	DropWorkAreaForUnit(UnitBase, bWorkAreaIsSnapped, InDropWorkAreaFailedSound);
 }
 
 void AExtendedControllerBase::MoveDraggedUnit_Implementation(float DeltaSeconds)
@@ -3289,7 +3371,7 @@ void AExtendedControllerBase::MoveDraggedUnit_Implementation(float DeltaSeconds)
 
 		// Raycast from the mouse position into the scene to find the ground
 		FVector Start = MousePosition;
-		FVector End = Start + MouseDirection * 5000; // Extend to a maximum reasonable distance
+		FVector End = Start + MouseDirection * 1000000.f; // Extend to a maximum reasonable distance
 
 		FHitResult HitResult;
 		FCollisionQueryParams CollisionParams;
@@ -3465,7 +3547,6 @@ void AExtendedControllerBase::StopWorkOnSelectedUnit()
 
 void AExtendedControllerBase::SelectUnitsWithTag_Implementation(FGameplayTag Tag, int TeamId)
 {
-	UE_LOG(LogTemp, Warning, TEXT("!!!SelectUnitsWithTag_Implementation!!!!"));
 	if(!RTSGameMode || !RTSGameMode->AllUnits.Num()) return;
 
 	AbilityArrayIndex = 0;
@@ -3509,14 +3590,41 @@ void AExtendedControllerBase::SelectUnitsWithTag_Implementation(FGameplayTag Tag
 	}
 	UE_LOG(LogTemp, Warning, TEXT("!!!NewSelection.Num(): %d!!!!"), NewSelection.Num());
 	UE_LOG(LogTemp, Warning, TEXT("!!!TeamId: %d!!!!"), TeamId);
-	// Update the HUD with the sorted selection
 
-	// Call this on Server
+	// Update the controller's selected units on the server immediately
+	// so that subsequent actions in the same frame/sequence (like Ability execution) can see it.
+	SelectedUnits = NewSelection;
+	CurrentUnitWidgetIndex = 0;
+
+	// Update the HUD with the sorted selection
+	// Call this on Server to sync to Client
 	Client_UpdateHUDSelection(NewSelection, TeamId);
+}
+
+void AExtendedControllerBase::Server_AssignTagToSelectedUnits_Implementation(FGameplayTag Tag, const TArray<AUnitBase*>& Units, int TeamId)
+{
+	if(!RTSGameMode || !RTSGameMode->AllUnits.Num()) return;
+
+	for (int32 i = 0; i < RTSGameMode->AllUnits.Num(); i++)
+	{
+		AUnitBase* Unit = Cast<AUnitBase>(RTSGameMode->AllUnits[i]);
+		if (Unit && Unit->TeamId == TeamId)
+		{
+			if (Units.Contains(Unit))
+			{
+				Unit->UnitTags.AddTag(Tag);
+			}
+			else
+			{
+				Unit->UnitTags.RemoveTag(Tag);
+			}
+		}
+	}
 }
 
 void AExtendedControllerBase::Client_UpdateHUDSelection_Implementation(const TArray<AUnitBase*>& NewSelection, int TeamId)
 {
+	UE_LOG(LogTemp, Log, TEXT("Client_UpdateHUDSelection: NewSelection.Num=%d, TeamId=%d, SelectableTeamId=%d"), NewSelection.Num(), TeamId, SelectableTeamId);
 	if (SelectableTeamId != TeamId)
 	{
 		return;
@@ -3524,6 +3632,7 @@ void AExtendedControllerBase::Client_UpdateHUDSelection_Implementation(const TAr
 	
 	if (!HUDBase)
 	{
+		UE_LOG(LogTemp, Warning, TEXT("Client_UpdateHUDSelection: HUDBase is null!"));
 		return;
 	}
 	
@@ -3564,6 +3673,7 @@ void AExtendedControllerBase::AddToCurrentUnitWidgetIndex(int Add)
 	}
 
 	const int StartIndex = CurrentUnitWidgetIndex;
+	if (!SelectedUnits[StartIndex]) return;
 	const FGameplayTag CurrentTag = SelectedUnits[StartIndex]->AbilitySelectionTag;
 
 	int visited = 0;       // how many units (including empty‑ability ones) we've stepped past
@@ -3576,7 +3686,7 @@ void AExtendedControllerBase::AddToCurrentUnitWidgetIndex(int Add)
 		CurrentUnitWidgetIndex = (CurrentUnitWidgetIndex + Add + NumUnits) % NumUnits;
 
 		// if this unit has no default abilities, skip it
-		if (SelectedUnits[CurrentUnitWidgetIndex]->DefaultAbilities.Num() == 0)
+		if (!SelectedUnits[CurrentUnitWidgetIndex] || SelectedUnits[CurrentUnitWidgetIndex]->DefaultAbilities.Num() == 0)
 		{
 			visited++;
 			continue;
@@ -3586,8 +3696,8 @@ void AExtendedControllerBase::AddToCurrentUnitWidgetIndex(int Add)
 		defaultHits++;
 
 		// if the tag changed, or we looped all the way back to where we started, stop here
-		if (SelectedUnits[CurrentUnitWidgetIndex]->AbilitySelectionTag != CurrentTag ||
-			CurrentUnitWidgetIndex == StartIndex)
+		if (SelectedUnits[CurrentUnitWidgetIndex] && (SelectedUnits[CurrentUnitWidgetIndex]->AbilitySelectionTag != CurrentTag ||
+			CurrentUnitWidgetIndex == StartIndex))
 		{
 			break;
 		}
@@ -3638,6 +3748,11 @@ void AExtendedControllerBase::LoadUnits_Implementation(const TArray<AUnitBase*>&
 {
 		if (Transporter && Transporter->IsATransporter) // Transporter->IsATransporter
 		{
+			// Assign a non-zero TransportId to the clicked transporter (stable identifier)
+			if (Transporter->TransportId == 0)
+			{
+				Transporter->TransportId = Transporter->GetUniqueID();
+			}
 
 			// Set up start and end points for the line trace (downward direction)
 			FVector Start = Transporter->GetActorLocation();
@@ -3656,6 +3771,10 @@ void AExtendedControllerBase::LoadUnits_Implementation(const TArray<AUnitBase*>&
 			{
 				if (UnitsToLoad[i] && UnitsToLoad[i]->UnitState != UnitData::Dead && UnitsToLoad[i]->CanBeTransported)
 				{
+					// Bind this unit to the clicked transporter so it won't load into others en route
+					UnitsToLoad[i]->TransportId = Transporter->TransportId;
+					UnitsToLoad[i]->RemoveFocusEntityTarget();
+					
 					// Calculate the distance between the selected unit and the transport unit in X/Y space only.
 					float Distance = FVector::Dist2D(UnitsToLoad[i]->GetActorLocation(), Transporter->GetActorLocation());
 
@@ -3748,7 +3867,7 @@ bool AExtendedControllerBase::CheckClickOnWorkArea(FHitResult Hit_Pawn)
 		if (Base && Base->IsBase)
 		{
 			for (int32 i = 0; i < SelectedUnits.Num(); i++) {
-				if (SelectedUnits[i]->IsWorker)
+				if (SelectedUnits[i] && SelectedUnits[i]->IsWorker)
 				{
 					SelectedUnits[i]->RemoveFocusEntityTarget();
 					SelectedUnits[i]->Base = Base;
@@ -3892,6 +4011,110 @@ void AExtendedControllerBase::Client_SelectUnitsFromSameSquad_Implementation(con
 	}
 }
 
+
+void AExtendedControllerBase::UpdateExtractionSounds(float DeltaSeconds)
+{
+	if (!IsLocalController()) return;
+
+	FVector CameraLocation = FVector::ZeroVector;
+	FRotator CameraRotation = FRotator::ZeroRotator;
+	GetPlayerViewPoint(CameraLocation, CameraRotation);
+
+	float SoundMultiplier = GetSoundMultiplier();
+
+	// Mapping to store active work area per resource type for this frame
+	TMap<EResourceType, AWorkArea*> ActiveAreas;
+	TMap<EResourceType, float> FadeOutDurations;
+
+	// Iterate through all WorkAreas in the level
+	for (TActorIterator<AWorkArea> It(GetWorld()); It; ++It)
+	{
+		AWorkArea* Area = *It;
+		if (!Area) continue;
+
+		EResourceType ResType = Area->ConvertWorkAreaTypeToResourceType(Area->Type);
+		if (ResType == EResourceType::MAX) continue;
+
+		FadeOutDurations.Add(ResType, Area->ExtractionSoundFadeOutDuration);
+
+		if (ActiveAreas.Contains(ResType)) continue;
+
+		bool bHasExtractingWorker = false;
+		for (AWorkingUnitBase* Worker : Area->Workers)
+		{
+			if (Worker && Worker->GetUnitState() == UnitData::ResourceExtraction)
+			{
+				bHasExtractingWorker = true;
+				break;
+			}
+		}
+
+		if (bHasExtractingWorker)
+		{
+			float Distance = FVector::Dist(CameraLocation, Area->GetActorLocation());
+			bool bIsClose = Distance <= ExtractionSoundDistance;
+
+			bool bIsOnScreen = false;
+			FVector2D ScreenPosition;
+			if (ProjectWorldLocationToScreen(Area->GetActorLocation(), ScreenPosition))
+			{
+				bIsOnScreen = true;
+			}
+
+			if (bIsClose || bIsOnScreen)
+			{
+				ActiveAreas.Add(ResType, Area);
+			}
+		}
+	}
+
+	// Now handle the audio components
+	for (uint8 i = 0; i < (uint8)EResourceType::MAX; ++i)
+	{
+		EResourceType Type = (EResourceType)i;
+		AWorkArea* ActiveArea = ActiveAreas.FindRef(Type);
+		UAudioComponent* AudioComp = ExtractionAudioComponents.FindRef(Type);
+
+		if (ActiveArea && ActiveArea->ExtractionSound)
+		{
+			float FinalVolume = SoundMultiplier * ActiveArea->ExtractionSoundVolume;
+
+			if (!IsValid(AudioComp))
+			{
+				AudioComp = UGameplayStatics::SpawnSound2D(this, ActiveArea->ExtractionSound, 0.f, 1.f, 0.f, nullptr, false, true);
+				if (AudioComp)
+				{
+					ExtractionAudioComponents.Add(Type, AudioComp);
+					AudioComp->FadeIn(ExtractionSoundFadeInDuration, FinalVolume);
+				}
+			}
+			else
+			{
+				if (AudioComp->Sound != ActiveArea->ExtractionSound)
+				{
+					AudioComp->FadeOut(ActiveArea->ExtractionSoundFadeOutDuration, 0.f);
+					AudioComp = UGameplayStatics::SpawnSound2D(this, ActiveArea->ExtractionSound, 0.f, 1.f, 0.f, nullptr, false, true);
+					ExtractionAudioComponents.Add(Type, AudioComp);
+					AudioComp->FadeIn(ExtractionSoundFadeInDuration, FinalVolume);
+				}
+				else if (!AudioComp->IsPlaying())
+				{
+					AudioComp->FadeIn(ExtractionSoundFadeInDuration, FinalVolume);
+				}
+				else
+				{
+					AudioComp->SetVolumeMultiplier(FinalVolume);
+				}
+			}
+		}
+		else if (IsValid(AudioComp) && AudioComp->IsPlaying())
+		{
+			float FadeOutDuration = FadeOutDurations.Contains(Type) ? FadeOutDurations[Type] : 1.0f;
+			AudioComp->FadeOut(FadeOutDuration, 0.f);
+			ExtractionAudioComponents.Remove(Type);
+		}
+	}
+}
 
 // Server RPC to mirror ability indicator overlap state from client to server
 void AExtendedControllerBase::Server_SetIndicatorOverlap_Implementation(AAbilityIndicator* Indicator, bool bOverlapping)

@@ -10,6 +10,8 @@
 #include "Engine/World.h"
 #include "Engine/GameInstance.h"
 #include "System/MapSwitchSubsystem.h"
+#include "Controller/PlayerController/CameraControllerBase.h"
+#include "TimerManager.h"
 
 #define LOCTEXT_NAMESPACE "MapSwitchActor"
 
@@ -19,6 +21,10 @@ void AMapSwitchActor::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutL
 {
     Super::GetLifetimeReplicatedProps(OutLifetimeProps);
     DOREPLIFETIME(AMapSwitchActor, bIsEnabled);
+    DOREPLIFETIME(AMapSwitchActor, CenterPoint);
+    DOREPLIFETIME(AMapSwitchActor, RotationRadius);
+    DOREPLIFETIME(AMapSwitchActor, RotationSpeed);
+    DOREPLIFETIME(AMapSwitchActor, CurrentAngle);
 }
 
 AMapSwitchActor::AMapSwitchActor()
@@ -37,6 +43,7 @@ AMapSwitchActor::AMapSwitchActor()
     MarkerWidgetComponent->SetRelativeLocation(FVector(0.f, 0.f, 150.f));
 
     bReplicates = true;
+    SetReplicateMovement(true);
 
     MarkerDisplayText = LOCTEXT("DefaultMarkerName", "Default Marker Name");
 }
@@ -58,7 +65,7 @@ void AMapSwitchActor::BeginPlay()
         MarkerWidget->SetMarkerText(MarkerDisplayText);
     }
     
-    if (SwitchTag != NAME_None)
+    if (HasAuthority() && SwitchTag != NAME_None)
     {
         if (UWorld* World = GetWorld())
         {
@@ -78,10 +85,13 @@ void AMapSwitchActor::BeginPlay()
     }
 
 
-    if (!FMath::IsNearlyZero(RotationSpeed))
+    if (HasAuthority() && !FMath::IsNearlyZero(RotationSpeed))
     {
         CurrentAngle = FMath::RandRange(0.f, 2.f * PI);
-        
+    }
+
+    if (!FMath::IsNearlyZero(RotationSpeed))
+    {
         FVector NewLocation = CenterPoint;
         NewLocation.X += RotationRadius * FMath::Cos(CurrentAngle);
         NewLocation.Y += RotationRadius * FMath::Sin(CurrentAngle);
@@ -95,18 +105,16 @@ void AMapSwitchActor::Tick(float DeltaTime)
 {
     Super::Tick(DeltaTime);
 
-    if (FMath::IsNearlyZero(RotationSpeed))
+    if (!FMath::IsNearlyZero(RotationSpeed))
     {
-        return;
+        CurrentAngle += RotationSpeed * DeltaTime * (PI / 180.f);
+
+        FVector NewLocation = CenterPoint;
+        NewLocation.X += RotationRadius * FMath::Cos(CurrentAngle);
+        NewLocation.Y += RotationRadius * FMath::Sin(CurrentAngle);
+
+        SetActorLocation(NewLocation);
     }
-
-    CurrentAngle += RotationSpeed * DeltaTime * (PI / 180.f);
-
-    FVector NewLocation = CenterPoint;
-    NewLocation.X += RotationRadius * FMath::Cos(CurrentAngle);
-    NewLocation.Y += RotationRadius * FMath::Sin(CurrentAngle);
-
-    SetActorLocation(NewLocation);
 }
 void AMapSwitchActor::OnOverlapBegin(UPrimitiveComponent* OverlappedComp, AActor* OtherActor, UPrimitiveComponent* OtherComp, int32 OtherBodyIndex, bool bFromSweep, const FHitResult& SweepResult)
 {
@@ -130,6 +138,11 @@ void AMapSwitchActor::OnOverlapBegin(UPrimitiveComponent* OverlappedComp, AActor
 
     if (Unit->TeamId == CustomPC->SelectableTeamId)
     {
+        if (WidgetCloseTimerHandle.IsValid())
+        {
+            GetWorldTimerManager().ClearTimer(WidgetCloseTimerHandle);
+        }
+
         if (MapSwitchWidgetClass && !ActiveWidget)
         {
             ActiveWidget = CreateWidget<UMapSwitchWidget>(LocalPC, MapSwitchWidgetClass);
@@ -138,6 +151,11 @@ void AMapSwitchActor::OnOverlapBegin(UPrimitiveComponent* OverlappedComp, AActor
                 FString MapToTravel = TargetMap.IsNull() ? "" : TargetMap.ToSoftObjectPath().GetLongPackageName();
                 ActiveWidget->InitializeWidget(MapToTravel, this, bIsEnabled);
                 ActiveWidget->AddToViewport();
+
+                if (ACameraControllerBase* CameraPC = Cast<ACameraControllerBase>(LocalPC))
+                {
+                    CameraPC->bIsCameraMovementHaltedByUI = true;
+                }
             }
         }
     }
@@ -161,8 +179,27 @@ void AMapSwitchActor::OnOverlapEnd(UPrimitiveComponent* OverlappedComp, AActor* 
     {
         if (ActiveWidget)
         {
-            ActiveWidget->RemoveFromParent();
-            ActiveWidget = nullptr;
+            GetWorldTimerManager().SetTimer(WidgetCloseTimerHandle, this, &AMapSwitchActor::CloseWidget, 5.0f, false);
         }
+    }
+}
+
+void AMapSwitchActor::CloseWidget()
+{
+    if (WidgetCloseTimerHandle.IsValid())
+    {
+        GetWorldTimerManager().ClearTimer(WidgetCloseTimerHandle);
+    }
+
+    if (ActiveWidget)
+    {
+        ActiveWidget->RemoveFromParent();
+        ActiveWidget = nullptr;
+    }
+
+    APlayerController* LocalPC = UGameplayStatics::GetPlayerController(GetWorld(), 0);
+    if (ACameraControllerBase* CameraPC = Cast<ACameraControllerBase>(LocalPC))
+    {
+        CameraPC->bIsCameraMovementHaltedByUI = false;
     }
 }

@@ -55,19 +55,20 @@ void UUnitMovementProcessor::ConfigureQueries(const TSharedRef<FMassEntityManage
     EntityQuery.AddTagRequirement<FMassStateAttackTag>(EMassFragmentPresence::Any);   
     EntityQuery.AddTagRequirement<FMassStatePauseTag>(EMassFragmentPresence::Any);
     //EntityQuery.AddTagRequirement<FMassStateCastingTag>(EMassFragmentPresence::Any);
-    EntityQuery.AddTagRequirement<FMassStateIsAttackedTag>(EMassFragmentPresence::Any);
     
     EntityQuery.AddTagRequirement<FMassStateGoToBaseTag>(EMassFragmentPresence::Any);
     EntityQuery.AddTagRequirement<FMassStateGoToResourceExtractionTag>(EMassFragmentPresence::Any);
     EntityQuery.AddTagRequirement<FMassStateGoToBuildTag>(EMassFragmentPresence::Any);
     EntityQuery.AddTagRequirement<FMassStateGoToRepairTag>(EMassFragmentPresence::Any);
 
+    EntityQuery.AddTagRequirement<FMassStateResourceExtractionTag>(EMassFragmentPresence::Any);
     EntityQuery.AddTagRequirement<FMassStateBuildTag>(EMassFragmentPresence::Any);
     EntityQuery.AddTagRequirement<FMassStateRepairTag>(EMassFragmentPresence::Any);
     
     EntityQuery.AddTagRequirement<FMassStateStopMovementTag>(EMassFragmentPresence::None);  
+    EntityQuery.AddTagRequirement<FMassStateFrozenTag>(EMassFragmentPresence::None);
     EntityQuery.AddTagRequirement<FMassStateIsAttackedTag>(EMassFragmentPresence::None);
-
+    EntityQuery.AddTagRequirement<FMassStateDeadTag>(EMassFragmentPresence::None);
 
     EntityQuery.RegisterWithProcessor(*this);
 
@@ -93,18 +94,20 @@ void UUnitMovementProcessor::ConfigureQueries(const TSharedRef<FMassEntityManage
     ClientEntityQuery.AddTagRequirement<FMassStateAttackTag>(EMassFragmentPresence::Any);   
     ClientEntityQuery.AddTagRequirement<FMassStatePauseTag>(EMassFragmentPresence::Any);
     //ClientEntityQuery.AddTagRequirement<FMassStateCastingTag>(EMassFragmentPresence::Any);
-    ClientEntityQuery.AddTagRequirement<FMassStateIsAttackedTag>(EMassFragmentPresence::Any);
     
     ClientEntityQuery.AddTagRequirement<FMassStateGoToBaseTag>(EMassFragmentPresence::Any);
     ClientEntityQuery.AddTagRequirement<FMassStateGoToResourceExtractionTag>(EMassFragmentPresence::Any);
     ClientEntityQuery.AddTagRequirement<FMassStateGoToBuildTag>(EMassFragmentPresence::Any);
     ClientEntityQuery.AddTagRequirement<FMassStateGoToRepairTag>(EMassFragmentPresence::Any);
 
+    ClientEntityQuery.AddTagRequirement<FMassStateResourceExtractionTag>(EMassFragmentPresence::Any);
     ClientEntityQuery.AddTagRequirement<FMassStateBuildTag>(EMassFragmentPresence::Any);
     ClientEntityQuery.AddTagRequirement<FMassStateRepairTag>(EMassFragmentPresence::Any);
     
     ClientEntityQuery.AddTagRequirement<FMassStateStopMovementTag>(EMassFragmentPresence::None);  
+    ClientEntityQuery.AddTagRequirement<FMassStateFrozenTag>(EMassFragmentPresence::None);
     ClientEntityQuery.AddTagRequirement<FMassStateIsAttackedTag>(EMassFragmentPresence::None);
+    ClientEntityQuery.AddTagRequirement<FMassStateDeadTag>(EMassFragmentPresence::None);
     
 	ClientEntityQuery.RegisterWithProcessor(*this);
 }
@@ -233,7 +236,7 @@ void UUnitMovementProcessor::ExecuteClient(FMassEntityManager& EntityManager, FM
                     {
                         if (const AActor* PredActor = ActorList[i].Get())
                         {
-                            UE_LOG(LogTemp, Warning, TEXT("[Client][Prediction] Using fallback speed for %s: %.1f (MoveTarget.DesiredSpeed was %.2f)"), *PredActor->GetName(), DesiredSpeedUsed, MoveTarget.DesiredSpeed.Get());
+                            //UE_LOG(LogTemp, Warning, TEXT("[Client][Prediction] Using fallback speed for %s: %.1f (MoveTarget.DesiredSpeed was %.2f)"), *PredActor->GetName(), DesiredSpeedUsed, MoveTarget.DesiredSpeed.Get());
                         }
                     }
                 }
@@ -249,8 +252,8 @@ void UUnitMovementProcessor::ExecuteClient(FMassEntityManager& EntityManager, FM
                 {
                     if (const AActor* PredActor = ActorList[i].Get())
                     {
-                        UE_LOG(LogTemp, Warning, TEXT("[Client][Prediction] Active for %s -> Dest=%s (SrvTarget=%s), Speed=%.1f, AccRad=%.1f"),
-                            *PredActor->GetName(), *FinalDestination.ToString(), *MoveTarget.Center.ToString(), DesiredSpeedUsed, AcceptanceRadiusUsed);
+                        //UE_LOG(LogTemp, Warning, TEXT("[Client][Prediction] Active for %s -> Dest=%s (SrvTarget=%s), Speed=%.1f, AccRad=%.1f"),
+                        //    *PredActor->GetName(), *FinalDestination.ToString(), *MoveTarget.Center.ToString(), DesiredSpeedUsed, AcceptanceRadiusUsed);
                     }
                 }
                 // Clear prediction when server target converges to predicted (2D check)
@@ -261,7 +264,7 @@ void UUnitMovementProcessor::ExecuteClient(FMassEntityManager& EntityManager, FM
                     {
                         if (const AActor* PredActor = ActorList[i].Get())
                         {
-                            UE_LOG(LogTemp, Warning, TEXT("[Client][Prediction] Reconciled for %s (server MoveTarget matched predicted)"), *PredActor->GetName());
+                            //UE_LOG(LogTemp, Warning, TEXT("[Client][Prediction] Reconciled for %s (server MoveTarget matched predicted)"), *PredActor->GetName());
                         }
                     }
                 }

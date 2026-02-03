@@ -55,6 +55,7 @@ void AGASUnit::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetime
 	DOREPLIFETIME(AGASUnit, QueSnapshot);
 	DOREPLIFETIME(AGASUnit, CurrentSnapshot);
 	DOREPLIFETIME(AGASUnit, AbilityQueueSize);
+	DOREPLIFETIME(AGASUnit, MaxAbilityQueueSize);
 }
 
 
@@ -62,6 +63,19 @@ void AGASUnit::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetime
 void AGASUnit::Tick(float DeltaTime)
 {
 	Super::Tick(DeltaTime);
+
+	if (HasAuthority())
+	{
+		QueueFallbackTimer += DeltaTime;
+		if (QueueFallbackTimer >= 1.0f)
+		{
+			QueueFallbackTimer = 0.f;
+			if (!ActivatedAbilityInstance && !AbilityQueue.IsEmpty())
+			{
+				ActivateNextQueuedAbility();
+			}
+		}
+	}
 }
 
 
@@ -212,6 +226,22 @@ void AGASUnit::OnAbilityActivated(UGameplayAbility* ActivatedAbility)
 	}
 }
 
+void AGASUnit::SetHealth_Implementation(float NewHealth)
+{
+	if (Attributes)
+	{
+		Attributes->SetAttributeHealth(NewHealth);
+	}
+}
+
+void AGASUnit::SetShield_Implementation(float NewShield)
+{
+	if (Attributes)
+	{
+		Attributes->SetAttributeShield(NewShield);
+	}
+}
+
 void AGASUnit::SetToggleUnitDetection_Implementation(bool ToggleTo)
 {
 	ToggleUnitDetection = ToggleTo;
@@ -264,7 +294,7 @@ bool AGASUnit::ActivateAbilityByInputID(
 
 	if (bIsBusy)
 	{
-		if (Ability->UseAbilityQue && AbilityQueueSize < 6)
+		if (Ability->UseAbilityQue && AbilityQueueSize < MaxAbilityQueueSize)
 		{
 			if (bHasCost && ResourceGameMode && !Ability->bDeferCostUntilPlacement)
 			{
@@ -282,7 +312,7 @@ bool AGASUnit::ActivateAbilityByInputID(
 			Queued.bCostPaid    = bHasCost && !Ability->bDeferCostUntilPlacement;
 			QueSnapshot.Add(Queued);
 			AbilityQueue.Enqueue(Queued);
-			AbilityQueueSize++;
+			AbilityQueueSize = QueSnapshot.Num();
 		}
 		else if(HitResult.IsValidBlockingHit() || Ability->bDeferCostUntilPlacement)
 		{
@@ -316,7 +346,7 @@ bool AGASUnit::ActivateAbilityByInputID(
 		}
 		else if (!bIsActivated)
 		{
-			if (Ability->UseAbilityQue && AbilityQueueSize < 6)
+			if (Ability->UseAbilityQue && AbilityQueueSize < MaxAbilityQueueSize)
 			{
 				FQueuedAbility Queued;
 				Queued.AbilityClass = AbilityToActivate;
@@ -324,7 +354,20 @@ bool AGASUnit::ActivateAbilityByInputID(
 				Queued.InstigatorPC = InstigatorPC;
 				QueSnapshot.Add(Queued);
 				AbilityQueue.Enqueue(Queued);
-				AbilityQueueSize++;
+				AbilityQueueSize = QueSnapshot.Num();
+
+				if (!ActivatedAbilityInstance)
+				{
+					const float DelayTime = 0.1f;
+					FTimerHandle TimerHandle;
+					GetWorld()->GetTimerManager().SetTimer(
+						TimerHandle,
+						this,
+						&AGASUnit::ActivateNextQueuedAbility,
+						DelayTime,
+						false
+					);
+				}
 			}
 		}
 
@@ -360,12 +403,19 @@ void AGASUnit::OnAbilityEnded(UGameplayAbility* EndedAbility)
 
 void AGASUnit::ActivateNextQueuedAbility()
 {
+	if (!HasAuthority()) return;
+
 	static thread_local int32 RecursionDepth = 0;
 	if (RecursionDepth > 10)
 	{
 		RecursionDepth = 0;
 		ActivatedAbilityInstance = nullptr;
 		CurrentSnapshot = FQueuedAbility();
+		return;
+	}
+
+	if (ActivatedAbilityInstance)
+	{
 		return;
 	}
 
@@ -414,9 +464,16 @@ void AGASUnit::ActivateNextQueuedAbility()
 				CurrentSnapshot = Next;
 				CurrentInstigatorPC = Next.InstigatorPC.Get();
 
-				if (Next.HitResult.IsValidBlockingHit() && ActivatedAbilityInstance)
+				if (Next.HitResult.IsValidBlockingHit())
 				{
-					FireMouseHitAbility(Next.HitResult);
+					if (ActivatedAbilityInstance)
+					{
+						FireMouseHitAbility(Next.HitResult);
+					}
+					else
+					{
+						CancelCurrentAbility();
+					}
 				}
 			}
 			else
@@ -435,8 +492,7 @@ void AGASUnit::ActivateNextQueuedAbility()
 	}
 	else
 	{
-		ActivatedAbilityInstance = nullptr;
-		CurrentSnapshot = FQueuedAbility();
+		CancelCurrentAbility();
 	}
 }
 
@@ -498,6 +554,11 @@ void AGASUnit::FireMouseHitAbility(const FHitResult& InHitResult)
 
 bool AGASUnit::DequeueAbility(int Index)
 {
+	if (!HasAuthority())
+	{
+		return false;
+	}
+
 	TArray<FQueuedAbility> TempArray;
 	FQueuedAbility TempItem;
 	FQueuedAbility RemovedItem;
@@ -521,7 +582,7 @@ bool AGASUnit::DequeueAbility(int Index)
 	}
 
 	QueSnapshot = TempArray;
-	AbilityQueueSize--;
+	AbilityQueueSize = QueSnapshot.Num();
 
 	// Refund resources only if cost was paid when queueing
 	if (bRemoved && RemovedItem.AbilityClass && RemovedItem.bCostPaid)

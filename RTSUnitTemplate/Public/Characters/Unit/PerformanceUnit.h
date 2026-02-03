@@ -18,6 +18,8 @@
 class UNiagaraComponent;
 class UAudioComponent;
 struct FTimerHandle;
+class UUnitBaseHealthBar;
+class UUnitTimerWidget;
 
 USTRUCT(BlueprintType)
 struct FActiveNiagaraEffect
@@ -125,41 +127,12 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = RTSUnitTemplate)
 	float VisibilityOffset = 150.f;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = RTSUnitTemplate)
-	bool HealthCompCreated = false;
+	// Timer accumulator for CheckTeamVisibility (runs every 5 seconds)
+	float TeamVisibilityCheckTimer = 0.f;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = RTSUnitTemplate)
-	bool bForceWidgetPosition = true;
+	float TeamVisibilityCheckInterval = 5.f;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = RTSUnitTemplate)
-	int HideHealthBarUnitCount = 200;
-
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = RTSUnitTemplate)
-	bool HealthBarUpdateTriggered = false;
-	
-	UPROPERTY(Replicated, EditAnywhere, BlueprintReadWrite, Category = RTSUnitTemplate)
-	class UWidgetComponent* HealthWidgetComp;
-
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = RTSUnitTemplate)
-	float HealthWidgetHeightOffset = 150.f;
-	
-	UPROPERTY(Replicated, EditAnywhere, BlueprintReadWrite, Category = RTSUnitTemplate)
-	FVector HealthWidgetRelativeOffset;
-
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = RTSUnitTemplate)
-	TSubclassOf<UUserWidget> HealthBarWidgetClass;
-	
-	UPROPERTY(Replicated, EditAnywhere, BlueprintReadWrite, Category = RTSUnitTemplate)
-	class UWidgetComponent* TimerWidgetComp;
-
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = RTSUnitTemplate)
-	float TimerWidgetHeightOffset = 100.f;
-
-	UPROPERTY(Replicated, EditAnywhere, BlueprintReadWrite, Category = RTSUnitTemplate)
-	FVector TimerWidgetRelativeOffset;
-	//UFUNCTION(BlueprintCallable, Category = RTSUnitTemplate)
-	//void SetEnemyVisibility(bool IsVisible, int PlayerTeamId);
-	
 	UFUNCTION(BlueprintCallable, Category = RTSUnitTemplate)
 	void CheckViewport();
 
@@ -191,7 +164,7 @@ public:
 	void FireEffects(UNiagaraSystem* ImpactVFX, USoundBase* ImpactSound, FVector ScaleVFX, float ScaleSound, float EffectDelay = 0.f, float SoundDelay = 0.f, int32 ID = -1);
 
 	UFUNCTION(NetMulticast, Reliable, BlueprintCallable, Category = RTSUnitTemplate)
-	void FireEffectsAtLocation(UNiagaraSystem* ImpactVFX, USoundBase* ImpactSound, FVector ScaleVFX, float ScaleSound, const FVector Location, float KillDelay, FRotator Rotation = FRotator(0.0f, 0.0f, 0.0f), int32 ID = -1);
+	void FireEffectsAtLocation(UNiagaraSystem* ImpactVFX, USoundBase* ImpactSound, FVector ScaleVFX, float ScaleSound, const FVector Location, float KillDelay, FRotator Rotation = FRotator(0.0f, 0.0f, 0.0f), float EffectDelay = 0.f, float SoundDelay = 0.f, int32 ID = -1);
 
 	UFUNCTION(NetMulticast, Reliable, BlueprintCallable, Category = RTSUnitTemplate)
 	void StopAllEffects(bool bFadeAudio = true, float FadeTime = 0.15f);
@@ -207,11 +180,11 @@ public:
 		UPROPERTY(Transient)
 		TArray<TWeakObjectPtr<UAudioComponent>> ActiveAudio;
 		
-		UPROPERTY(Transient)
+ 	UPROPERTY(Transient)
 		TArray<FTimerHandle> PendingEffectTimers;
 
-		void StopNiagaraComponent(UNiagaraComponent* NC, float FadeTime);
-		void StopAudioComponent(UAudioComponent* AC, bool bFade, float FadeTime);
+		void StopNiagaraComponent(class UNiagaraComponent* NC, float FadeTime);
+		void StopAudioComponent(class UAudioComponent* AC, bool bFade, float FadeTime);
 		
 		UFUNCTION(BlueprintCallable, Category = RTSUnitTemplate)
 		bool IsInViewport(FVector WorldPosition, float Offset);

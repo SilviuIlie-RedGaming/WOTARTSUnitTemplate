@@ -46,8 +46,22 @@ public:
 	UPROPERTY(EditAnywhere, Replicated, BlueprintReadWrite, Category = RTSUnitTemplate)
 	AWaypoint* NextWaypoint;
 
+	UPROPERTY(EditAnywhere, Replicated, BlueprintReadWrite, Category = RTSUnitTemplate)
+	AUnitBase* FollowCharacter;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = RTSUnitTemplate)
+	float FollowInterval = 5.0f;
+
+	FTimerHandle FollowTimerHandle;
+
+	UFUNCTION()
+	void UpdatePositionToFollowCharacter();
+
 	UPROPERTY(VisibleAnywhere, BlueprintReadWrite, Category = RTSUnitTemplate)
 	AUnitBase* ActualCharacter;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadWrite, Category = RTSUnitTemplate)
+	TSet<AUnitBase*> AssignedUnits;
 	
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = RTSUnitTemplate)
 	bool PatrolCloseToWaypoint = false;
@@ -76,6 +90,10 @@ public:
 	virtual bool IsNetRelevantFor(const AActor* RealViewer, const AActor* ViewTarget, const FVector& SrcLocation) const override;
 
 	void UpdateVisibility();
+
+	void AddAssignedUnit(AUnitBase* Unit);
+	void RemoveAssignedUnit(AUnitBase* Unit);
+	int32 GetAssignedUnitCount() const { return AssignedUnits.Num(); }
 	/*
 	UPROPERTY(VisibleAnywhere, BlueprintReadWrite, Category = RTSUnitTemplate)
 	FTimerHandle TimerHandle;

@@ -7,6 +7,7 @@
 #include "Engine/SkeletalMesh.h"
 #include "Materials/MaterialInstance.h"
 #include "Core/UnitData.h"
+#include "Core/WorkerData.h"
 #include "GameFramework/GameModeBase.h"
 #include "GameplayEffect.h"
 #include "Characters/Unit/SpeakingUnit.h"
@@ -38,6 +39,15 @@ struct FTimerHandleMapping
 	UPROPERTY(VisibleAnywhere, Category = "Timer")
 	bool SkipTimer = false;
 };
+USTRUCT()
+struct FTagCountMap
+{
+	GENERATED_BODY()
+
+	UPROPERTY()
+	TMap<FGameplayTag, int32> TagCounts;
+};
+
 UCLASS()
 class RTSUNITTEMPLATE_API ARTSGameModeBase : public AGameModeBase
 {
@@ -87,12 +97,45 @@ public:
 	int32 LoadingWidgetTriggerId = 0;
 
 	UPROPERTY(BlueprintReadOnly, Category = "RTSUnitTemplate|WinLose")
-	AWinLoseConfigActor* WinLoseConfigActor;
+	TArray<AWinLoseConfigActor*> WinLoseConfigActors;
+
+	FTimerHandle WinLoseTimerHandle;
+
+	void CheckWinLoseConditionTimer();
+
+	UPROPERTY(BlueprintReadOnly, Category = "RTSUnitTemplate|WinLose")
+	AWinLoseConfigActor* WinLoseConfigActor; // Primary or first found config actor
 
 	bool bWinLoseTriggered = false;
+	bool bInitialSpawnFinished = false;
+	bool bBuildingsEverExisted = false;
+
+	UPROPERTY()
+	TMap<FGameplayTag, int32> TagsDestroyedCountMap;
+
+	UPROPERTY()
+	TMap<FGameplayTag, int32> TagsAliveCountMap;
+
+	UPROPERTY()
+	TMap<int32, FTagCountMap> TeamTagsDestroyedCountMap;
+
+	UPROPERTY()
+	TMap<int32, FTagCountMap> TeamTagsAliveCountMap;
+
+	bool IsAnyUnitWithTagAlive(const FGameplayTag& Tag, const TMap<FGameplayTag, int32>& AliveTagCounts) const;
 
 	UFUNCTION(BlueprintCallable, Category = "RTSUnitTemplate|WinLose")
+	void InitializeWinLoseConfigActors();
+
+	UFUNCTION(BlueprintCallable, Category = "RTSUnitTemplate|WinLose")
+	void UpdateTagProgressForConfig(AWinLoseConfigActor* Config);
+
+	UFUNCTION(BlueprintCallable, Category = "RTSUnitTemplate|WinLose")
+	virtual float GetResource(int32 TeamId, EResourceType ResourceType) const;
+
 	virtual void CheckWinLoseCondition(AUnitBase* DestroyedUnit = nullptr);
+
+	void TriggerWinLoseForPlayer(ACameraControllerBase* PC, bool bWon, AWinLoseConfigActor* Config);
 
 	UFUNCTION(NetMulticast, Reliable)
 	void Multicast_TriggerWinLoseUI(bool bWon, TSubclassOf<class UWinLoseWidget> InWidgetClass, const FString& InMapName, FName DestinationSwitchTagToEnable);

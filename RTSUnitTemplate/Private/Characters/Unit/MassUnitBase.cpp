@@ -8,6 +8,8 @@
 #include "Mass/Signals/MySignals.h"
 #include "Net/UnrealNetwork.h"
 #include "Components/SkeletalMeshComponent.h"
+#include "Components/WidgetComponent.h"
+#include "Components/CapsuleComponent.h"
 #include "Mass/States/ChaseStateProcessor.h"
 #include "MassCommonFragments.h"
 #include "GameFramework/CharacterMovementComponent.h"
@@ -16,6 +18,7 @@
 #include "MassNavigationFragments.h"
 #include "TimerManager.h"
 #include "Components/StaticMeshComponent.h"
+#include "Components/InstancedStaticMeshComponent.h"
 #include "Engine/StaticMeshActor.h"
 
 AMassUnitBase::AMassUnitBase(const FObjectInitializer& ObjectInitializer)
@@ -41,6 +44,26 @@ AMassUnitBase::AMassUnitBase(const FObjectInitializer& ObjectInitializer)
 	{
 		SelectionIcon->SetupAttachment(RootComponent);
 	}
+
+	HealthWidgetComp = ObjectInitializer.CreateDefaultSubobject<UWidgetComponent>(this, TEXT("Healthbar"));
+	HealthWidgetComp->SetupAttachment(RootComponent);
+	HealthWidgetComp->SetVisibility(true);
+	HealthWidgetComp->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+
+	float CapsuleHalfHeight = 88.f;
+	if (UCapsuleComponent* Capsule = GetCapsuleComponent())
+	{
+		CapsuleHalfHeight = Capsule->GetUnscaledCapsuleHalfHeight();
+	}
+
+	HealthWidgetRelativeOffset = FVector(0.f, 0.f, CapsuleHalfHeight + HealthWidgetHeightOffset);
+	HealthWidgetComp->SetRelativeLocation(HealthWidgetRelativeOffset);
+
+	TimerWidgetComp = ObjectInitializer.CreateDefaultSubobject<UWidgetComponent>(this, TEXT("Timer"));
+	TimerWidgetComp->SetupAttachment(RootComponent);
+	TimerWidgetComp->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+	TimerWidgetRelativeOffset = FVector(0.f, 0.f, CapsuleHalfHeight + TimerWidgetHeightOffset);
+	TimerWidgetComp->SetRelativeLocation(TimerWidgetRelativeOffset);
 }
 
 void AMassUnitBase::OnConstruction(const FTransform& Transform)
@@ -65,7 +88,13 @@ void AMassUnitBase::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLif
 	
 	DOREPLIFETIME(AMassUnitBase, IsFlying);
 	DOREPLIFETIME(AMassUnitBase, FlyHeight);
+
+	DOREPLIFETIME(AMassUnitBase, HealthWidgetComp);
+	DOREPLIFETIME(AMassUnitBase, TimerWidgetComp);
+	DOREPLIFETIME(AMassUnitBase, HealthWidgetRelativeOffset);
+	DOREPLIFETIME(AMassUnitBase, TimerWidgetRelativeOffset);
 }
+
 
 FVector AMassUnitBase::GetMassActorLocation() const
 {
@@ -141,6 +170,29 @@ bool AMassUnitBase::AddStopMovementTagToEntity()
 	EntityManager->Defer().AddTag<FMassStateStopMovementTag>(EntityHandle);
 	
  return true;
+}
+
+bool AMassUnitBase::AddStopSeparationTagToEntity()
+{
+	FMassEntityManager* EntityManager;
+	FMassEntityHandle EntityHandle;
+
+	if (!GetMassEntityData(EntityManager, EntityHandle))
+	{
+		// Error already logged in GetMassEntityData
+		return false;
+	}
+
+	// Check if entity is still valid
+	if (!EntityManager->IsEntityValid(EntityHandle))
+	{
+		UE_LOG(LogTemp, Warning, TEXT("AMassUnitBase (%s): AddStopSeparationTagToEntity failed - Entity %s is no longer valid."), *GetName(), *EntityHandle.DebugGetDescription());
+		return false;
+	}
+	
+	EntityManager->Defer().AddTag<FMassStateStopSeparationTag>(EntityHandle);
+	
+	return true;
 }
 
 bool AMassUnitBase::ApplyStopXYMovementTag(bool bApply)
@@ -690,6 +742,7 @@ bool AMassUnitBase::FocusEntityTarget(AUnitBase* TargetUnit)
 	if (!TargetFrag) return false;
 	
 	TargetFrag->TargetEntity      = TargetEntity;
+	TargetFrag->LastKnownLocation = TargetUnit->GetMassActorLocation();
 	TargetFrag->IsFocusedOnTarget = true;
 
 	return true;
@@ -1030,11 +1083,30 @@ void AMassUnitBase::InitializeUnitMode()
 		else
 		{
 			// Update the existing instance to be at the component's local origin.
-			ISMComponent->UpdateInstanceTransform(InstanceIndex, LocalIdentityTransform, false, true, true);
+			ISMComponent->UpdateInstanceTransform(InstanceIndex, LocalIdentityTransform, false, true, false);
 			MeshRotationOffset = ISMComponent->GetRelativeRotation().Quaternion().GetNormalized();
 		}
 	}
 	
+}
+
+int32 AMassUnitBase::InitializeAdditionalISM(UInstancedStaticMeshComponent* InISMComponent)
+{
+	if (!InISMComponent || !InISMComponent->GetStaticMesh())
+	{
+		return INDEX_NONE;
+	}
+
+	const FTransform LocalIdentityTransform = FTransform::Identity;
+	if (InISMComponent->GetInstanceCount() == 0)
+	{
+		return InISMComponent->AddInstance(LocalIdentityTransform, false);
+	}
+	else
+	{
+		InISMComponent->UpdateInstanceTransform(0, LocalIdentityTransform, false, true, false);
+		return 0;
+	}
 }
 
 bool AMassUnitBase::SyncTranslation()
@@ -1071,6 +1143,45 @@ bool AMassUnitBase::SyncTranslation()
 	// Sync
 	FTransform& Current = TransformFrag->GetMutableTransform();
 	Current.SetTranslation(GetActorLocation());
+
+	return true;
+}
+
+
+bool AMassUnitBase::SyncRotation()
+{
+	FMassEntityManager* EntityManager = nullptr;
+	FMassEntityHandle   EntityHandle;
+
+	// Grab our Mass entity data
+	if (!GetMassEntityData(EntityManager, EntityHandle))
+	{
+		// already logged in GetMassEntityData
+		return false;
+	}
+
+	// Make sure it’s still alive
+	if (!EntityManager->IsEntityValid(EntityHandle))
+	{
+		UE_LOG(LogTemp, Warning,
+			   TEXT("AMassUnitBase (%s): SyncRotation failed – entity %s invalid."),
+			   *GetName(), *EntityHandle.DebugGetDescription());
+		return false;
+	}
+
+	// Fetch the transform fragment and overwrite its rotation
+	FTransformFragment* TransformFrag = EntityManager->GetFragmentDataPtr<FTransformFragment>(EntityHandle);
+	if (!TransformFrag)
+	{
+		UE_LOG(LogTemp, Warning,
+			   TEXT("AMassUnitBase (%s): SyncRotation failed – no FTransformFragment found."),
+			   *GetName());
+		return false;
+	}
+
+	// Sync
+	FTransform& Current = TransformFrag->GetMutableTransform();
+	Current.SetRotation(GetActorRotation().Quaternion());
 
 	return true;
 }
@@ -1579,6 +1690,176 @@ void AMassUnitBase::MulticastRotateActorYawToChase_Implementation(UStaticMeshCom
 	}
 }
 
+void AMassUnitBase::MulticastRotateISMYawToChase_Implementation(UInstancedStaticMeshComponent* ISMToRotate, int32 InstIndex, float InRotateDuration, float InRotationEaseExponent, bool bEnable, float YawOffsetDegrees, bool bTeleport)
+{
+	if (!ISMToRotate || InstIndex == INDEX_NONE)
+	{
+		return;
+	}
+
+	FISMInstanceKey Key(ISMToRotate, InstIndex);
+
+	if (bEnable)
+	{
+		FYawFollowData& Data = ActiveISMInstanceYawFollows.FindOrAdd(Key);
+		Data.Duration = InRotateDuration;
+		Data.EaseExp = FMath::Max(InRotationEaseExponent, 0.001f);
+		Data.OffsetDegrees = YawOffsetDegrees;
+		Data.bTeleport = bTeleport;
+
+		const float FrameDt = GetWorld() ? GetWorld()->GetDeltaSeconds() : 0.f;
+		const float TimerRate = (FrameDt > 0.f) ? FrameDt : (1.f / 60.f);
+
+		ISMInstanceYawFollow_Step();
+		if (!GetWorldTimerManager().IsTimerActive(ISMInstanceYawFollowTimerHandle))
+		{
+			GetWorldTimerManager().SetTimer(ISMInstanceYawFollowTimerHandle, this, &AMassUnitBase::ISMInstanceYawFollow_Step, TimerRate, true);
+		}
+	}
+	else
+	{
+		ActiveISMInstanceYawFollows.Remove(Key);
+		if (ActiveISMInstanceYawFollows.Num() == 0)
+		{
+			GetWorldTimerManager().ClearTimer(ISMInstanceYawFollowTimerHandle);
+		}
+	}
+}
+
+void AMassUnitBase::ISMInstanceYawFollow_Step()
+{
+	if (ActiveISMInstanceYawFollows.Num() == 0)
+	{
+		GetWorldTimerManager().ClearTimer(ISMInstanceYawFollowTimerHandle);
+		return;
+	}
+
+	TArray<FISMInstanceKey> ToRemove;
+	for (auto& Pair : ActiveISMInstanceYawFollows)
+	{
+		const FISMInstanceKey& Key = Pair.Key;
+		FYawFollowData& Data = Pair.Value;
+
+		UInstancedStaticMeshComponent* Comp = Key.Component.Get();
+		if (!Comp || !Comp->IsValidInstance(Key.InstanceIndex))
+		{
+			ToRemove.Add(Key);
+			continue;
+		}
+
+		AUnitBase* ThisUnit = Cast<AUnitBase>(this);
+		AUnitBase* TargetUnit = ThisUnit ? ThisUnit->UnitToChase : nullptr;
+		float DesiredRelativeYaw = Data.OffsetDegrees;
+
+		if (IsValid(TargetUnit))
+		{
+			FTransform InstTransform;
+			Comp->GetInstanceTransform(Key.InstanceIndex, InstTransform, true);
+			const FVector CompWorldLoc = InstTransform.GetLocation();
+			FVector TargetLoc = TargetUnit->GetActorLocation();
+
+			FVector ToTarget = TargetLoc - CompWorldLoc;
+			ToTarget.Z = 0.f;
+			if (ToTarget.IsNearlyZero(1e-3f))
+			{
+				continue;
+			}
+
+			const FRotator FacingRot = FRotationMatrix::MakeFromX(ToTarget.GetSafeNormal()).Rotator();
+			float DesiredWorldYaw = FacingRot.Yaw + Data.OffsetDegrees;
+			DesiredWorldYaw = FRotator::NormalizeAxis(DesiredWorldYaw);
+
+			float ParentYaw = 0.f;
+			if (const USceneComponent* Parent = Comp->GetAttachParent())
+			{
+				ParentYaw = Parent->GetComponentRotation().Yaw;
+			}
+			DesiredRelativeYaw = FRotator::NormalizeAxis(DesiredWorldYaw - ParentYaw);
+		}
+
+		FTransform RelativeTransform;
+		Comp->GetInstanceTransform(Key.InstanceIndex, RelativeTransform, false);
+		FRotator NewRelative = RelativeTransform.Rotator();
+		NewRelative.Yaw = DesiredRelativeYaw;
+
+		FStaticMeshRotateTween& Tween = ActiveISMInstanceTweens.FindOrAdd(Key);
+		Tween.Duration = Data.Duration;
+		Tween.EaseExp = FMath::Max(Data.EaseExp, 0.001f);
+		Tween.Elapsed = 0.f;
+		Tween.Start = RelativeTransform.GetRotation().GetNormalized();
+		Tween.Target = NewRelative.Quaternion().GetNormalized();
+		Tween.bTeleport = Data.bTeleport;
+		if ((Tween.Start | Tween.Target) < 0.f)
+		{
+			Tween.Target = (-Tween.Target);
+		}
+	}
+
+	const float FrameDt = GetWorld() ? GetWorld()->GetDeltaSeconds() : 0.f;
+	const float RotateTimerRate = (FrameDt > 0.f) ? FrameDt : (1.f / 60.f);
+	ISMInstanceRotations_Step();
+	if (!GetWorldTimerManager().IsTimerActive(ISMInstanceRotateTimerHandle))
+	{
+		GetWorldTimerManager().SetTimer(ISMInstanceRotateTimerHandle, this, &AMassUnitBase::ISMInstanceRotations_Step, RotateTimerRate, true);
+	}
+}
+
+void AMassUnitBase::ISMInstanceRotations_Step()
+{
+	if (ActiveISMInstanceTweens.Num() == 0)
+	{
+		GetWorldTimerManager().ClearTimer(ISMInstanceRotateTimerHandle);
+		return;
+	}
+
+	const float Dt = GetWorld() ? GetWorld()->GetDeltaSeconds() : 0.f;
+
+	TArray<FISMInstanceKey> ToRemove;
+	for (auto& Pair : ActiveISMInstanceTweens)
+	{
+		const FISMInstanceKey& Key = Pair.Key;
+		FStaticMeshRotateTween& Tween = Pair.Value;
+
+		UInstancedStaticMeshComponent* Comp = Key.Component.Get();
+		if (!Comp || !Comp->IsValidInstance(Key.InstanceIndex))
+		{
+			ToRemove.Add(Key);
+			continue;
+		}
+
+		Tween.Elapsed += Dt;
+		float Alpha = (Tween.Duration > 0.f) ? FMath::Clamp(Tween.Elapsed / Tween.Duration, 0.f, 1.f) : 1.f;
+		if (!FMath::IsNearlyEqual(Tween.EaseExp, 1.f))
+		{
+			Alpha = FMath::Pow(Alpha, Tween.EaseExp);
+		}
+
+		const FQuat NewLocal = FQuat::Slerp(Tween.Start, Tween.Target, Alpha).GetNormalized();
+		
+		FTransform InstTransform;
+		Comp->GetInstanceTransform(Key.InstanceIndex, InstTransform, false);
+		InstTransform.SetRotation(NewLocal);
+		Comp->UpdateInstanceTransform(Key.InstanceIndex, InstTransform, false, true, Tween.bTeleport);
+
+		if (Alpha >= 1.f)
+		{
+			InstTransform.SetRotation(Tween.Target);
+			Comp->UpdateInstanceTransform(Key.InstanceIndex, InstTransform, false, true, Tween.bTeleport);
+			ToRemove.Add(Key);
+		}
+	}
+
+	for (const auto& Key : ToRemove)
+	{
+		ActiveISMInstanceTweens.Remove(Key);
+	}
+
+	if (ActiveISMInstanceTweens.Num() == 0)
+	{
+		GetWorldTimerManager().ClearTimer(ISMInstanceRotateTimerHandle);
+	}
+}
+
 void AMassUnitBase::StaticMeshYawFollow_Step()
 {
 	if (ActiveYawFollows.Num() == 0)
@@ -1603,34 +1884,33 @@ void AMassUnitBase::StaticMeshYawFollow_Step()
 		// Use UnitToChase from AUnitBase if available
 		AUnitBase* ThisUnit = Cast<AUnitBase>(this);
 		AUnitBase* TargetUnit = ThisUnit ? ThisUnit->UnitToChase : nullptr;
-		if (!IsValid(TargetUnit))
+		float DesiredRelativeYaw = Data.OffsetDegrees;
+
+		if (IsValid(TargetUnit))
 		{
-			// No target; skip but keep following state for when a target appears
-			continue;
+			const FVector CompWorldLoc = Comp->GetComponentLocation();
+			FVector TargetLoc = TargetUnit->GetActorLocation();
+
+			// 2D direction on the XY plane
+			FVector ToTarget = TargetLoc - CompWorldLoc;
+			ToTarget.Z = 0.f;
+			if (ToTarget.IsNearlyZero(1e-3f))
+			{
+				continue;
+			}
+
+			const FRotator FacingRot = FRotationMatrix::MakeFromX(ToTarget.GetSafeNormal()).Rotator();
+			float DesiredWorldYaw = FacingRot.Yaw + Data.OffsetDegrees;
+			DesiredWorldYaw = FRotator::NormalizeAxis(DesiredWorldYaw);
+
+			// Convert desired world yaw to relative yaw under parent if any
+			float ParentYaw = 0.f;
+			if (const USceneComponent* Parent = Comp->GetAttachParent())
+			{
+				ParentYaw = Parent->GetComponentRotation().Yaw;
+			}
+			DesiredRelativeYaw = FRotator::NormalizeAxis(DesiredWorldYaw - ParentYaw);
 		}
-
-		const FVector CompWorldLoc = Comp->GetComponentLocation();
-		FVector TargetLoc = TargetUnit->GetActorLocation();
-
-		// 2D direction on the XY plane
-		FVector ToTarget = TargetLoc - CompWorldLoc;
-		ToTarget.Z = 0.f;
-		if (ToTarget.IsNearlyZero(1e-3f))
-		{
-			continue;
-		}
-
-		const FRotator FacingRot = FRotationMatrix::MakeFromX(ToTarget.GetSafeNormal()).Rotator();
-		float DesiredWorldYaw = FacingRot.Yaw + Data.OffsetDegrees;
-		DesiredWorldYaw = FRotator::NormalizeAxis(DesiredWorldYaw);
-
-		// Convert desired world yaw to relative yaw under parent if any
-		float ParentYaw = 0.f;
-		if (const USceneComponent* Parent = Comp->GetAttachParent())
-		{
-			ParentYaw = Parent->GetComponentRotation().Yaw;
-		}
-		float DesiredRelativeYaw = FRotator::NormalizeAxis(DesiredWorldYaw - ParentYaw);
 
 		FRotator NewRelative = Comp->GetRelativeRotation();
 		NewRelative.Yaw = DesiredRelativeYaw;
@@ -1665,6 +1945,213 @@ void AMassUnitBase::StaticMeshYawFollow_Step()
 	if (ActiveYawFollows.Num() == 0)
 	{
 		GetWorldTimerManager().ClearTimer(StaticMeshYawFollowTimerHandle);
+	}
+}
+
+void AMassUnitBase::MulticastRotateUnitYawToChase_Implementation(float InRotateDuration, float InRotationEaseExponent, bool bEnable, float YawOffsetDegrees)
+{
+	bUnitYawFollowEnabled = bEnable;
+
+	if (bUnitYawFollowEnabled)
+	{
+		// Disable continuous constant rotation if it was active
+		bContinuousUnitRotationEnabled = false;
+		GetWorldTimerManager().ClearTimer(ContinuousUnitRotationTimerHandle);
+
+		UnitYawFollowData.Duration = InRotateDuration;
+		UnitYawFollowData.EaseExp = FMath::Max(InRotationEaseExponent, 0.001f);
+		UnitYawFollowData.OffsetDegrees = YawOffsetDegrees;
+
+		// Start/update the follow timer
+		const float FrameDt = GetWorld() ? GetWorld()->GetDeltaSeconds() : 0.f;
+		const float TimerRate = (FrameDt > 0.f) ? FrameDt : (1.f / 60.f);
+
+		// Kick immediate step then ensure looping
+		UnitYawFollow_Step();
+		if (!GetWorldTimerManager().IsTimerActive(UnitYawFollowTimerHandle))
+		{
+			GetWorldTimerManager().SetTimer(UnitYawFollowTimerHandle, this, &AMassUnitBase::UnitYawFollow_Step, TimerRate, true);
+		}
+	}
+	else
+	{
+		GetWorldTimerManager().ClearTimer(UnitYawFollowTimerHandle);
+		GetWorldTimerManager().ClearTimer(UnitRotateTimerHandle);
+	}
+}
+
+void AMassUnitBase::UnitYawFollow_Step()
+{
+	if (!bUnitYawFollowEnabled)
+	{
+		GetWorldTimerManager().ClearTimer(UnitYawFollowTimerHandle);
+		return;
+	}
+
+	AUnitBase* ThisUnit = Cast<AUnitBase>(this);
+	AUnitBase* TargetUnit = ThisUnit ? ThisUnit->UnitToChase : nullptr;
+	float DesiredWorldYaw = UnitYawFollowData.OffsetDegrees;
+
+	if (IsValid(TargetUnit))
+	{
+		const FVector UnitWorldLoc = GetActorLocation();
+		FVector TargetLoc = TargetUnit->GetActorLocation();
+
+		// 2D direction on the XY plane
+		FVector ToTarget = TargetLoc - UnitWorldLoc;
+		ToTarget.Z = 0.f;
+		if (ToTarget.IsNearlyZero(1e-3f))
+		{
+			return;
+		}
+
+		const FRotator FacingRot = FRotationMatrix::MakeFromX(ToTarget.GetSafeNormal()).Rotator();
+		DesiredWorldYaw = FacingRot.Yaw + UnitYawFollowData.OffsetDegrees;
+	}
+
+	DesiredWorldYaw = FRotator::NormalizeAxis(DesiredWorldYaw);
+
+	FRotator NewRotation = GetActorRotation();
+	NewRotation.Yaw = DesiredWorldYaw;
+
+	// Drive/refresh the tween toward the newly computed yaw-only rotation
+	UnitRotateTween.Duration = UnitYawFollowData.Duration;
+	UnitRotateTween.EaseExp = FMath::Max(UnitYawFollowData.EaseExp, 0.001f);
+	UnitRotateTween.Elapsed = 0.f;
+	UnitRotateTween.Start = GetActorRotation().Quaternion().GetNormalized();
+	UnitRotateTween.Target = NewRotation.Quaternion().GetNormalized();
+	if ((UnitRotateTween.Start | UnitRotateTween.Target) < 0.f)
+	{
+		UnitRotateTween.Target = (-UnitRotateTween.Target);
+	}
+
+	// Ensure rotation tween timer is running
+	const float FrameDt = GetWorld() ? GetWorld()->GetDeltaSeconds() : 0.f;
+	const float RotateTimerRate = (FrameDt > 0.f) ? FrameDt : (1.f / 60.f);
+	
+	UnitRotation_Step();
+	if (!GetWorldTimerManager().IsTimerActive(UnitRotateTimerHandle))
+	{
+		GetWorldTimerManager().SetTimer(UnitRotateTimerHandle, this, &AMassUnitBase::UnitRotation_Step, RotateTimerRate, true);
+	}
+}
+
+void AMassUnitBase::UnitRotation_Step()
+{
+	const float DeltaTime = GetWorld() ? GetWorld()->GetDeltaSeconds() : 0.f;
+	UnitRotateTween.Elapsed += DeltaTime;
+
+	float Alpha = 1.0f;
+	if (UnitRotateTween.Duration > 0.f)
+	{
+		Alpha = FMath::Clamp(UnitRotateTween.Elapsed / UnitRotateTween.Duration, 0.f, 1.f);
+		if (UnitRotateTween.EaseExp != 1.0f)
+		{
+			Alpha = FMath::Pow(Alpha, UnitRotateTween.EaseExp);
+		}
+	}
+
+	FQuat CurrentQuat = FQuat::Slerp(UnitRotateTween.Start, UnitRotateTween.Target, Alpha);
+	SetActorRotation(CurrentQuat.Rotator());
+	SyncRotation();
+
+	if (Alpha >= 1.0f)
+	{
+		GetWorldTimerManager().ClearTimer(UnitRotateTimerHandle);
+	}
+}
+
+void AMassUnitBase::MulticastContinuousUnitRotation_Implementation(float YawRate, bool bEnable)
+{
+	bContinuousUnitRotationEnabled = bEnable;
+	ContinuousUnitYawRate = YawRate;
+
+	if (bContinuousUnitRotationEnabled)
+	{
+		// Disable unit-to-chase yaw follow if it was active
+		bUnitYawFollowEnabled = false;
+		GetWorldTimerManager().ClearTimer(UnitYawFollowTimerHandle);
+		GetWorldTimerManager().ClearTimer(UnitRotateTimerHandle);
+
+		const float FrameDt = GetWorld() ? GetWorld()->GetDeltaSeconds() : 0.f;
+		const float TimerRate = (FrameDt > 0.f) ? FrameDt : (1.f / 60.f);
+
+		if (!GetWorldTimerManager().IsTimerActive(ContinuousUnitRotationTimerHandle))
+		{
+			GetWorldTimerManager().SetTimer(ContinuousUnitRotationTimerHandle, this, &AMassUnitBase::ContinuousUnitRotation_Step, TimerRate, true);
+		}
+	}
+	else
+	{
+		GetWorldTimerManager().ClearTimer(ContinuousUnitRotationTimerHandle);
+	}
+}
+
+void AMassUnitBase::ContinuousUnitRotation_Step()
+{
+	if (!bContinuousUnitRotationEnabled)
+	{
+		GetWorldTimerManager().ClearTimer(ContinuousUnitRotationTimerHandle);
+		return;
+	}
+
+	const float Dt = GetWorld() ? GetWorld()->GetDeltaSeconds() : 0.f;
+	
+	FRotator NewRotation = GetActorRotation();
+	NewRotation.Yaw += ContinuousUnitYawRate * Dt;
+	NewRotation.Yaw = FRotator::NormalizeAxis(NewRotation.Yaw);
+
+	SetActorRotation(NewRotation);
+	SyncRotation();
+}
+
+void AMassUnitBase::MulticastMoveUnitLinear_Implementation(const FVector& RelativeLocationChange, float InMoveDuration, float InMoveEaseExponent)
+{
+	// Snap if no duration
+	if (InMoveDuration <= 0.f)
+	{
+		const FVector TargetLoc = GetActorLocation() + GetActorRotation().RotateVector(RelativeLocationChange);
+		SetActorLocation(TargetLoc, false, nullptr, ETeleportType::TeleportPhysics);
+		SyncTranslation();
+		return;
+	}
+
+	// Initialize interpolation state
+	GetWorldTimerManager().ClearTimer(UnitMoveTimerHandle);
+	UnitMoveTween.Duration = InMoveDuration;
+	UnitMoveTween.Elapsed = 0.f;
+	UnitMoveTween.EaseExp = FMath::Max(InMoveEaseExponent, 0.001f);
+	UnitMoveTween.Start = GetActorLocation();
+	UnitMoveTween.Target = UnitMoveTween.Start + GetActorRotation().RotateVector(RelativeLocationChange);
+
+	// Immediate step then start timer
+	UnitMove_Step();
+
+	const float FrameDt = GetWorld() ? GetWorld()->GetDeltaSeconds() : 0.f;
+	const float TimerRate = (FrameDt > 0.f) ? FrameDt : (1.f / 60.f);
+	GetWorldTimerManager().SetTimer(UnitMoveTimerHandle, this, &AMassUnitBase::UnitMove_Step, TimerRate, true);
+}
+
+void AMassUnitBase::UnitMove_Step()
+{
+	const float Dt = GetWorld() ? GetWorld()->GetDeltaSeconds() : 0.f;
+	UnitMoveTween.Elapsed += Dt;
+
+	float Alpha = (UnitMoveTween.Duration > 0.f) ? FMath::Clamp(UnitMoveTween.Elapsed / UnitMoveTween.Duration, 0.f, 1.f) : 1.f;
+	if (!FMath::IsNearlyEqual(UnitMoveTween.EaseExp, 1.f))
+	{
+		Alpha = FMath::Pow(Alpha, UnitMoveTween.EaseExp);
+	}
+
+	const FVector NewLocation = FMath::Lerp(UnitMoveTween.Start, UnitMoveTween.Target, Alpha);
+	SetActorLocation(NewLocation, false, nullptr, ETeleportType::TeleportPhysics);
+	SyncTranslation();
+
+	if (Alpha >= 1.f)
+	{
+		SetActorLocation(UnitMoveTween.Target, false, nullptr, ETeleportType::TeleportPhysics);
+		SyncTranslation();
+		GetWorldTimerManager().ClearTimer(UnitMoveTimerHandle);
 	}
 }
 

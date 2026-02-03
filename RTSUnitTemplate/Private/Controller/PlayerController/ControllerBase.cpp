@@ -48,7 +48,7 @@ void AControllerBase::InitCameraHUDGameMode()
 {
 	CameraBase = Cast<ACameraBase>(GetPawn());
 	HUDBase = Cast<APathProviderHUD>(GetHUD());
-	if(HUDBase && HUDBase->StopLoading && CameraBase) CameraBase->DeSpawnLoadingWidget();
+	if (HUDBase && HUDBase->StopLoading && CameraBase) CameraBase->DeSpawnLoadingWidget();
 	
 	RTSGameMode = Cast<ARTSGameModeBase>(GetWorld()->GetAuthGameMode());
 
@@ -187,7 +187,7 @@ void AControllerBase::ShiftReleased()
 void AControllerBase::SelectUnit(int Index)
 {
 	
-	if (SelectedUnits[Index] == 0) return;
+	if (SelectedUnits[Index] == nullptr) return;
 	
 	CurrentUnitWidgetIndex = Index;
 	HUDBase->DeselectAllUnits();
@@ -216,6 +216,8 @@ void AControllerBase::LeftClickAMoveUEPF_Implementation(AUnitBase* Unit, FVector
 	
 	SetUnitState_Replication(Unit,1);
 	MoveToLocationUEPathFinding(Unit, Location);
+	Unit->SetRdyForTransport(false);
+	Unit->TransportId = 0;
 }
 
 void AControllerBase::LeftClickAMove_Implementation(AUnitBase* Unit, FVector Location)
@@ -234,6 +236,8 @@ void AControllerBase::LeftClickAMove_Implementation(AUnitBase* Unit, FVector Loc
 	Unit->RunLocationArray.Empty();
 	Unit->RunLocationArrayIterator = 0;
 	SetRunLocation(Unit, Location);
+	Unit->SetRdyForTransport(false);
+	Unit->TransportId = 0;
 }
 
 
@@ -252,6 +256,8 @@ void AControllerBase::LeftClickAttack_Implementation(AUnitBase* Unit, FVector Lo
 			{
 				/// Focus Enemy Units ///
 				Unit->UnitToChase = UnitBase;
+				Unit->SetRdyForTransport(false);
+				Unit->TransportId = 0;
 				SetUnitState_Replication(Unit, 3);
 				
 			}else if(UseUnrealEnginePathFinding)
@@ -556,8 +562,10 @@ void AControllerBase::RightClickRunUEPF_Implementation(AUnitBase* Unit, FVector 
 	}
 	
 	MoveToLocationUEPathFinding(Unit, Location);
-	SetUnitState_Replication(Unit,1);
+	SetUnitState_Replication(Unit, 1);
 	SetToggleUnitDetection(Unit, false);
+	Unit->SetRdyForTransport(false);
+	Unit->TransportId = 0;
 }
 
 void AControllerBase::RightClickRunDijkstraPF_Implementation(AUnitBase* Unit, FVector Location, int Counter)
@@ -586,6 +594,8 @@ void AControllerBase::RightClickRunDijkstraPF_Implementation(AUnitBase* Unit, FV
 	Unit->RunLocationArrayIterator = 0;
 	SetRunLocation(Unit, Location);
 	Unit->SetToggleUnitDetection(false);
+	Unit->SetRdyForTransport(false);
+	Unit->TransportId = 0;
 
 	float Range = FVector::Dist(UnitLocation, Location);
  
@@ -622,11 +632,26 @@ AWaypoint* AControllerBase::CreateAWaypoint(FVector NewWPLocation, ABuildingBase
 
 			// Assign the new waypoint to the building
 			BuildingBase->NextWaypoint = NewWaypoint;
+			NewWaypoint->AddAssignedUnit(BuildingBase);
 			return NewWaypoint;
 		}
 	}
 
 	return nullptr;
+}
+
+void AControllerBase::UnregisterWaypointFromBuilding(ABuildingBase* Building)
+{
+	if (Building && Building->NextWaypoint)
+	{
+		AWaypoint* WP = Building->NextWaypoint;
+		WP->RemoveAssignedUnit(Building);
+		if (HasAuthority() && WP->GetAssignedUnitCount() <= 0)
+		{
+			WP->Destroy(true, true);
+		}
+		Building->NextWaypoint = nullptr;
+	}
 }
 
 
@@ -654,15 +679,16 @@ void AControllerBase::SetBuildingWaypoint(FVector NewWPLocation, AUnitBase* Unit
 		
 		if (!BuildingWaypoint && BuildingWaypoint != BuildingBase->NextWaypoint)
 		{
-			if (BuildingBase->NextWaypoint) BuildingBase->NextWaypoint->Destroy(true, true);
+			if (BuildingBase->NextWaypoint) UnregisterWaypointFromBuilding(BuildingBase);
 
 			BuildingWaypoint = CreateAWaypoint(NewWPLocation, BuildingBase);
 		}
 		else if (BuildingWaypoint && BuildingWaypoint != BuildingBase->NextWaypoint)
 		{
-			if (BuildingBase->NextWaypoint) BuildingBase->NextWaypoint->Destroy(true, true);
+			if (BuildingBase->NextWaypoint) UnregisterWaypointFromBuilding(BuildingBase);
 
 			BuildingBase->NextWaypoint = BuildingWaypoint;
+			BuildingWaypoint->AddAssignedUnit(BuildingBase);
 				
 		}
 		else if( BuildingBase->NextWaypoint) BuildingBase->NextWaypoint->SetActorLocation(NewWPLocation);
@@ -681,7 +707,7 @@ void AControllerBase::Multi_SetBuildingWaypoint_Implementation(FVector NewWPLoca
 	{
 		if (ABuildingBase* BuildingBase = Cast<ABuildingBase>(Unit))
 		{
-			BuildingBase->NextWaypoint = BuildingWaypoint;
+			BuildingBase->SetWaypoint(BuildingWaypoint);
 			if (BuildingBase->NextWaypoint)
 			{
 				BuildingBase->NextWaypoint->SetActorLocation(NewWPLocation);
@@ -748,30 +774,12 @@ FVector AControllerBase::CalculateGridOffset(int32 Row, int32 Col) const
 	}
 }
 
-void AControllerBase::DrawDebugCircleAtLocation(UWorld* World, const FVector& Location, FColor CircleColor)
+void AControllerBase::DrawCircleAtLocation(UWorld* World, const FVector& Location, FColor CircleColor)
 {
-	if (!World) return;
-
-	float Radius = 15.f;
-	int32 NumSegments = 32;       // Glätte des Kreises
-	float LifeTime = 1.5f;        // Dauer des Kreises in Sekunden
-	float Thickness = 2.f;        // Linienstärke
-
-	// Kreis in der XY-Ebene zeichnen
-	DrawDebugCircle(
-		World, 
-		Location+FVector(0.f,0.f,15.f), 
-		Radius, 
-		NumSegments, 
-		CircleColor, 
-		false,          // Nicht permanent
-		LifeTime, 
-		0,              // Depth Priority
-		Thickness, 
-		FVector(1, 0, 0), // X-Achse
-		FVector(0, 1, 0), // Y-Achse
-		false            // Keine Achsen zeichnen
-	);
+	if (HUDBase)
+	{
+		HUDBase->AddClickIndicator(Location, CircleColor);
+	}
 }
 
 #define COLLISION_NAVMODIFIER ECC_GameTraceChannel1
@@ -927,17 +935,17 @@ void AControllerBase::RunUnitsAndSetWaypoints(FHitResult Hit)
 				if (BuildingBase->HasWaypoint) PlayWaypointSound = true;
 			}
 			else if (IsShiftPressed) {
-				DrawDebugCircleAtLocation(GetWorld(), RunLocation, FColor::Green);
+				DrawCircleAtLocation(GetWorld(), RunLocation, FColor::Green);
 				RightClickRunShift(SelectedUnits[i], RunLocation); // _Implementation
 				PlayRunSound = true;
 			}else if(UseUnrealEnginePathFinding)
 			{
-				DrawDebugCircleAtLocation(GetWorld(), RunLocation, FColor::Green);
+				DrawCircleAtLocation(GetWorld(), RunLocation, FColor::Green);
 				RightClickRunUEPF(SelectedUnits[i], RunLocation, true); // _Implementation
 				PlayRunSound = true;
 			}
 			else {
-				DrawDebugCircleAtLocation(GetWorld(), RunLocation, FColor::Green);
+				DrawCircleAtLocation(GetWorld(), RunLocation, FColor::Green);
 				RightClickRunDijkstraPF(SelectedUnits[i], RunLocation, i); // _Implementation
 				PlayRunSound = true;
 			}
@@ -1210,8 +1218,6 @@ void AControllerBase::OnRep_SelectableTeamId()
 			It->UpdateVisibility();
 		}
 	}
-
-	// Broadcast delegate so widgets can react to team ID changes
 	OnTeamIdChanged.Broadcast(SelectableTeamId);
 }
 

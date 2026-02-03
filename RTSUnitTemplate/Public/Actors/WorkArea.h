@@ -107,12 +107,21 @@ public:
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = RTSUnitTemplate)
 	TSubclassOf<class AWorkResource> WorkResourceClass;
-	
+
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = RTSUnitTemplate)
 	TSubclassOf<ABuildingBase> BuildingClass;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = RTSUnitTemplate)
-	TSubclassOf<class AAIController> BuildingController;
+	USoundBase* ExtractionSound;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = RTSUnitTemplate)
+	float ExtractionSoundFadeOutDuration = 1.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = RTSUnitTemplate)
+	float ExtractionSoundVolume = 1.0f;
+	
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = RTSUnitTemplate)
+	TSubclassOf<class ABuildingBase> BuildingClass;
 	
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = RTSUnitTemplate)
 	ABuildingBase* Building;
@@ -160,7 +169,7 @@ public:
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Construction)
     bool bFinalBuildingSpawned = false;
  	
- 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = RTSUnitTemplate)
+ 	UPROPERTY(Replicated, EditAnywhere, BlueprintReadWrite, Category = RTSUnitTemplate)
  	TArray<AWorkingUnitBase*> Workers;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = RTSUnitTemplate)
@@ -307,4 +316,10 @@ public:
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = RTSUnitTemplate)
 	bool ResultCanBeSelected = true;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = RTSUnitTemplate)
+	bool InstantDrop = false;
+
+	UPROPERTY(BlueprintReadWrite, Category = RTSUnitTemplate)
+	bool AreaDropped = false;
 };

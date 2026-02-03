@@ -43,21 +43,25 @@ void UActorTransformSyncProcessor::ConfigureQueries(const TSharedRef<FMassEntity
         EntityQuery.AddTagRequirement<FMassStatePatrolTag>(EMassFragmentPresence::Any);
         EntityQuery.AddTagRequirement<FMassStatePatrolIdleTag>(EMassFragmentPresence::Any);
         EntityQuery.AddTagRequirement<FMassStateIdleTag>(EMassFragmentPresence::Any);
+        //EntityQuery.AddTagRequirement<FMassStateStopMovementTag>(EMassFragmentPresence::Any); // Added to any group
         
         EntityQuery.AddTagRequirement<FMassStateGoToBaseTag>(EMassFragmentPresence::Any);
         EntityQuery.AddTagRequirement<FMassStateGoToResourceExtractionTag>(EMassFragmentPresence::Any);
         EntityQuery.AddTagRequirement<FMassStateGoToBuildTag>(EMassFragmentPresence::Any);
         EntityQuery.AddTagRequirement<FMassStateGoToRepairTag>(EMassFragmentPresence::Any);
 
+        EntityQuery.AddTagRequirement<FMassStateResourceExtractionTag>(EMassFragmentPresence::Any);
         EntityQuery.AddTagRequirement<FMassStateBuildTag>(EMassFragmentPresence::Any);
         EntityQuery.AddTagRequirement<FMassStateRepairTag>(EMassFragmentPresence::Any);
     
         EntityQuery.AddTagRequirement<FMassStateAttackTag>(EMassFragmentPresence::Any);
         EntityQuery.AddTagRequirement<FMassStatePauseTag>(EMassFragmentPresence::Any);
         EntityQuery.AddTagRequirement<FMassStateCastingTag>(EMassFragmentPresence::Any);
+        EntityQuery.AddTagRequirement<FMassStateDeadTag>(EMassFragmentPresence::Any);
     
-        EntityQuery.AddTagRequirement<FMassStateStopMovementTag>(EMassFragmentPresence::None); 
         EntityQuery.AddTagRequirement<FMassStateIsAttackedTag>(EMassFragmentPresence::None);
+        EntityQuery.AddTagRequirement<FMassStateStopMovementTag>(EMassFragmentPresence::None);
+        EntityQuery.AddTagRequirement<FMassStateFrozenTag>(EMassFragmentPresence::None);
 		EntityQuery.RegisterWithProcessor(*this);
 
 		ClientEntityQuery.Initialize(EntityManager);
@@ -78,22 +82,25 @@ void UActorTransformSyncProcessor::ConfigureQueries(const TSharedRef<FMassEntity
         ClientEntityQuery.AddTagRequirement<FMassStatePatrolTag>(EMassFragmentPresence::Any);
         ClientEntityQuery.AddTagRequirement<FMassStatePatrolIdleTag>(EMassFragmentPresence::Any);
         ClientEntityQuery.AddTagRequirement<FMassStateIdleTag>(EMassFragmentPresence::Any);
+        //ClientEntityQuery.AddTagRequirement<FMassStateStopMovementTag>(EMassFragmentPresence::Any); // Added to any group
             
         ClientEntityQuery.AddTagRequirement<FMassStateGoToBaseTag>(EMassFragmentPresence::Any);
         ClientEntityQuery.AddTagRequirement<FMassStateGoToResourceExtractionTag>(EMassFragmentPresence::Any);
         ClientEntityQuery.AddTagRequirement<FMassStateGoToBuildTag>(EMassFragmentPresence::Any);
         ClientEntityQuery.AddTagRequirement<FMassStateGoToRepairTag>(EMassFragmentPresence::Any);
 
+        ClientEntityQuery.AddTagRequirement<FMassStateResourceExtractionTag>(EMassFragmentPresence::Any);
         ClientEntityQuery.AddTagRequirement<FMassStateBuildTag>(EMassFragmentPresence::Any);
         ClientEntityQuery.AddTagRequirement<FMassStateRepairTag>(EMassFragmentPresence::Any);
     
         ClientEntityQuery.AddTagRequirement<FMassStateAttackTag>(EMassFragmentPresence::Any);
         ClientEntityQuery.AddTagRequirement<FMassStatePauseTag>(EMassFragmentPresence::Any);
         ClientEntityQuery.AddTagRequirement<FMassStateCastingTag>(EMassFragmentPresence::Any);
+        ClientEntityQuery.AddTagRequirement<FMassStateDeadTag>(EMassFragmentPresence::Any);
     
-        ClientEntityQuery.AddTagRequirement<FMassStateStopMovementTag>(EMassFragmentPresence::None); 
         ClientEntityQuery.AddTagRequirement<FMassStateIsAttackedTag>(EMassFragmentPresence::None);
-
+        ClientEntityQuery.AddTagRequirement<FMassStateStopMovementTag>(EMassFragmentPresence::None); 
+        ClientEntityQuery.AddTagRequirement<FMassStateFrozenTag>(EMassFragmentPresence::None); 
     /*
 		ClientEntityQuery.AddRequirement<FTransformFragment>(EMassFragmentAccess::ReadOnly);
 		ClientEntityQuery.AddRequirement<FMassActorFragment>(EMassFragmentAccess::ReadWrite);
@@ -145,7 +152,7 @@ bool UActorTransformSyncProcessor::ShouldProceedWithTick(const float ActualDelta
  * @param MassTransform The entity's transform fragment, which will be updated with the correct scale.
  * @param InOutFinalLocation The location being calculated, its Z value will be modified by this function.
  */
-void UActorTransformSyncProcessor::HandleGroundAndHeight(const AUnitBase* UnitBase, FMassAgentCharacteristicsFragment& CharFragment, const FVector& CurrentActorLocation, const float ActualDeltaTime, FTransform& MassTransform, FVector& InOutFinalLocation) const
+void UActorTransformSyncProcessor::HandleGroundAndHeight(const AUnitBase* UnitBase, FMassAgentCharacteristicsFragment& CharFragment, const FVector& CurrentActorLocation, const float ActualDeltaTime, FTransform& MassTransform, FVector& InOutFinalLocation, bool bIsDead) const
 {
     float HeightOffset;
 
@@ -190,36 +197,53 @@ void UActorTransformSyncProcessor::HandleGroundAndHeight(const AUnitBase* UnitBa
             const float TargetZ = Hit.ImpactPoint.Z + HeightOffset;
             InOutFinalLocation.Z = FMath::FInterpConstantTo(CurrentZ, TargetZ, ActualDeltaTime, VerticalInterpSpeed * 100.f);
 
-            // Pitch-only Slope-Alignment: richte die Vorwärtsachse auf die Projektion auf der Bodenebene aus,
-            // rotiere dabei ausschließlich um die Right-Achse (kein Roll), Yaw bleibt erhalten.
-            const FVector SurfaceUp = Hit.ImpactNormal.GetSafeNormal();
-
-            // Yaw-Only Basis aus aktueller Rotation
-            const FRotator CurrentRot = MassTransform.GetRotation().Rotator();
-            const FRotator YawOnlyRot(0.f, CurrentRot.Yaw, 0.f);
-            const FQuat BaseYawQuat = YawOnlyRot.Quaternion();
-
-            const FVector YawForward = BaseYawQuat.GetForwardVector(); // bereits ohne Pitch/Roll
-            const FVector RightAxis = BaseYawQuat.GetRightVector();
-
-            FVector SlopeForward = FVector::VectorPlaneProject(YawForward, SurfaceUp).GetSafeNormal();
-
-            if (!SlopeForward.IsNearlyZero())
+            if (CharFragment.GroundAlignment)
             {
-                // Signierter Winkel um die Right-Achse zwischen YawForward und SlopeForward
-                const FVector Cross = FVector::CrossProduct(YawForward, SlopeForward);
-                const float Sin = FVector::DotProduct(Cross, RightAxis);
-                const float Cos = FVector::DotProduct(YawForward, SlopeForward);
-                const float PitchAngleRad = FMath::Atan2(Sin, Cos);
+                // Pitch-only Slope-Alignment: richte die Vorwärtsachse auf die Projektion auf der Bodenebene aus,
+                // rotiere dabei ausschließlich um die Right-Achse (kein Roll), Yaw bleibt erhalten.
+                const FVector SurfaceUp = Hit.ImpactNormal.GetSafeNormal();
 
-                const FQuat PitchQuat(RightAxis, PitchAngleRad);
-                const FQuat DesiredQuat = PitchQuat * BaseYawQuat;
+                // Yaw-Only Basis aus aktueller Rotation
+                const FRotator CurrentRot = MassTransform.GetRotation().Rotator();
+                const FRotator YawOnlyRot(0.f, CurrentRot.Yaw, 0.f);
+                const FQuat BaseYawQuat = YawOnlyRot.Quaternion();
 
-                // Interpolation zur Zielrotation (nur Pitch ändert sich)
-                const float GroundSlopeRotationSpeedDegrees = 360.0f; // ggf. als UPROPERTY konfigurieren
-                const FQuat NewRotQuat = FMath::QInterpConstantTo(
+                const FVector YawForward = BaseYawQuat.GetForwardVector(); // bereits ohne Pitch/Roll
+                const FVector RightAxis = BaseYawQuat.GetRightVector();
+
+                FVector SlopeForward = FVector::VectorPlaneProject(YawForward, SurfaceUp).GetSafeNormal();
+
+                if (!SlopeForward.IsNearlyZero())
+                {
+                    // Signierter Winkel um die Right-Achse zwischen YawForward und SlopeForward
+                    const FVector Cross = FVector::CrossProduct(YawForward, SlopeForward);
+                    const float Sin = FVector::DotProduct(Cross, RightAxis);
+                    const float Cos = FVector::DotProduct(YawForward, SlopeForward);
+                    const float PitchAngleRad = FMath::Atan2(Sin, Cos);
+
+                    const FQuat PitchQuat(RightAxis, PitchAngleRad);
+                    const FQuat DesiredQuat = PitchQuat * BaseYawQuat;
+
+                    // Interpolation zur Zielrotation (nur Pitch ändert sich)
+                    const float GroundSlopeRotationSpeedDegrees = 360.0f; // ggf. als UPROPERTY konfigurieren
+                    const FQuat NewRotQuat = FMath::QInterpConstantTo(
+                        MassTransform.GetRotation(),
+                        DesiredQuat,
+                        ActualDeltaTime,
+                        FMath::DegreesToRadians(GroundSlopeRotationSpeedDegrees)
+                    );
+                    MassTransform.SetRotation(NewRotQuat);
+                }
+            }
+            else
+            {
+                // Revert pitch and roll to zero (level) if GroundAlignment is disabled
+                FRotator CurrentRotation = MassTransform.GetRotation().Rotator();
+                FRotator DesiredRotator(0.f, CurrentRotation.Yaw, 0.f); // Only keep yaw
+                const float GroundSlopeRotationSpeedDegrees = 360.0f;
+                FQuat NewRotQuat = FMath::QInterpConstantTo(
                     MassTransform.GetRotation(),
-                    DesiredQuat,
+                    DesiredRotator.Quaternion(),
                     ActualDeltaTime,
                     FMath::DegreesToRadians(GroundSlopeRotationSpeedDegrees)
                 );
@@ -248,19 +272,29 @@ void UActorTransformSyncProcessor::HandleGroundAndHeight(const AUnitBase* UnitBa
         else if (IsValid(HitActor) && CharFragment.bIsFlying) // Flying, but a hit occurred (e.g., flying over terrain)
         {
             const float CurrentZ = CurrentActorLocation.Z;
-            const float TargetZ = Hit.ImpactPoint.Z + CharFragment.FlyHeight;
-            InOutFinalLocation.Z = FMath::FInterpConstantTo(CurrentZ, TargetZ, ActualDeltaTime, VerticalInterpSpeed * 100.f);
+            const float TargetZ = bIsDead ? Hit.ImpactPoint.Z + HeightOffset : Hit.ImpactPoint.Z + CharFragment.FlyHeight;
+            const float InterpSpeed = bIsDead ? VerticalDeadInterpSpeed : VerticalInterpSpeed;
+            
+            InOutFinalLocation.Z = FMath::FInterpConstantTo(CurrentZ, TargetZ, ActualDeltaTime, InterpSpeed * 100.f);
             CharFragment.LastGroundLocation = Hit.ImpactPoint.Z;
 
             // For flying units, maintain flat pitch/roll unless specific flight controls dictate otherwise
             FRotator CurrentRotation = MassTransform.GetRotation().Rotator();
+            
+            if (bIsDead && CharFragment.VerticalDeathRotationMultiplier > 0.f && CurrentZ > TargetZ + 1.f)
+            {
+                const float DeltaYaw = CharFragment.VerticalDeathRotationMultiplier * ActualDeltaTime;
+                CurrentRotation.Yaw += DeltaYaw;
+                //UE_LOG(LogTemp, Warning, TEXT("DeathSpin TraceHit TRIGGERED: Multiplier=%.2f DeltaYaw=%.2f NewYaw=%.2f"), CharFragment.VerticalDeathRotationMultiplier, DeltaYaw, CurrentRotation.Yaw);
+            }
+            
             FRotator DesiredRotator(0.f, CurrentRotation.Yaw, 0.f); // Only keep yaw
             const float GroundSlopeRotationSpeedDegrees = 360.0f; // Or a specific flying rotation speed
             FQuat NewRotQuat = FMath::QInterpConstantTo(
                 MassTransform.GetRotation(),
                 DesiredRotator.Quaternion(),
                 ActualDeltaTime,
-                FMath::DegreesToRadians(GroundSlopeRotationSpeedDegrees)
+                FMath::DegreesToRadians(FMath::Max(GroundSlopeRotationSpeedDegrees, CharFragment.VerticalDeathRotationMultiplier))
             );
             MassTransform.SetRotation(NewRotQuat);
         }
@@ -269,7 +303,34 @@ void UActorTransformSyncProcessor::HandleGroundAndHeight(const AUnitBase* UnitBa
     {
         if (CharFragment.bIsFlying)
         {
-            InOutFinalLocation.Z = CharFragment.LastGroundLocation + CharFragment.FlyHeight;
+            const float CurrentZ = CurrentActorLocation.Z;
+            const float TargetZ = bIsDead ? CharFragment.LastGroundLocation + HeightOffset : CharFragment.LastGroundLocation + CharFragment.FlyHeight;
+            const float InterpSpeed = bIsDead ? VerticalDeadInterpSpeed : VerticalInterpSpeed;
+
+            InOutFinalLocation.Z = FMath::FInterpConstantTo(CurrentZ, TargetZ, ActualDeltaTime, InterpSpeed * 100.f);
+
+            // Revert pitch and roll to zero (level) and handle death rotation
+            FRotator CurrentRotation = MassTransform.GetRotation().Rotator();
+            if (bIsDead)
+            {
+                UE_LOG(LogTemp, Warning, TEXT("DeathSpin NoHit Check: Multiplier=%.2f CurrentZ=%.2f TargetZ=%.2f"), CharFragment.VerticalDeathRotationMultiplier, CurrentZ, TargetZ);
+            }
+            if (bIsDead && CharFragment.VerticalDeathRotationMultiplier > 0.f && CurrentZ > TargetZ + 1.f)
+            {
+                const float DeltaYaw = CharFragment.VerticalDeathRotationMultiplier * ActualDeltaTime;
+                CurrentRotation.Yaw += DeltaYaw;
+                UE_LOG(LogTemp, Warning, TEXT("DeathSpin NoHit TRIGGERED: Multiplier=%.2f DeltaYaw=%.2f NewYaw=%.2f"), CharFragment.VerticalDeathRotationMultiplier, DeltaYaw, CurrentRotation.Yaw);
+            }
+
+            FRotator DesiredRotator(0.f, CurrentRotation.Yaw, 0.f);
+            const float GroundSlopeRotationSpeedDegrees = 360.0f;
+            FQuat NewRotQuat = FMath::QInterpConstantTo(
+                MassTransform.GetRotation(),
+                DesiredRotator.Quaternion(),
+                ActualDeltaTime,
+                FMath::DegreesToRadians(FMath::Max(GroundSlopeRotationSpeedDegrees, CharFragment.VerticalDeathRotationMultiplier))
+            );
+            MassTransform.SetRotation(NewRotQuat);
         }
         else // Not flying and no ground hit (e.g., falling or airborne)
         {
@@ -292,9 +353,11 @@ void UActorTransformSyncProcessor::HandleGroundAndHeight(const AUnitBase* UnitBa
 
 void UActorTransformSyncProcessor::RotateTowardsMovement(AUnitBase* UnitBase, const FVector& CurrentVelocity, const FMassCombatStatsFragment& Stats, const FMassAgentCharacteristicsFragment& Char, const FMassAIStateFragment& State, const FVector& CurrentActorLocation, float ActualDeltaTime, FTransform& InOutMassTransform) const
 {
-    FQuat DesiredQuat = InOutMassTransform.GetRotation();
+    FQuat CurrentQuat = InOutMassTransform.GetRotation();
+    FRotator CurrentRot = CurrentQuat.Rotator();
+    float TargetYaw = CurrentRot.Yaw;
 
-    if (Char.RotatesToMovement && !CurrentVelocity.IsNearlyZero(50.f) && !CurrentActorLocation.Equals(State.StoredLocation, UnitBase->StopRunTolerance))
+    if (Char.RotatesToMovement && !CurrentVelocity.IsNearlyZero(50.f) && !CurrentActorLocation.Equals(State.StoredLocation, UnitBase->MovementAcceptanceRadius))
     {
         FVector LookAtDir = CurrentVelocity;
         LookAtDir.Z = 0.f;
@@ -305,27 +368,32 @@ void UActorTransformSyncProcessor::RotateTowardsMovement(AUnitBase* UnitBase, co
             {
                 UnitBase->SetUnitState(UnitData::Run);
             }
-            DesiredQuat = LookAtDir.ToOrientationQuat();
+
+            FQuat DesiredQuat = LookAtDir.ToOrientationQuat();
 
             if (!UnitBase->bUseSkeletalMovement && !UnitBase->bUseIsmWithActorMovement)
                 DesiredQuat *= UnitBase->MeshRotationOffset;
+
+            TargetYaw = DesiredQuat.Rotator().Yaw;
         }
     }else if (UnitBase->GetUnitState() == UnitData::Run)
     {
         UnitBase->SetUnitState(UnitData::Idle);
     }
 
-    const float RotationSpeedRad = FMath::DegreesToRadians(Stats.RotationSpeed * Char.RotationSpeed);
-    FQuat NewQuat = InOutMassTransform.GetRotation();
-
     if (Char.RotatesToMovement)
     {
-        NewQuat = (RotationSpeedRad > KINDA_SMALL_NUMBER)
-            ? FMath::QInterpConstantTo(InOutMassTransform.GetRotation(), DesiredQuat, ActualDeltaTime, RotationSpeedRad)
-            : DesiredQuat;
+        const float RotationSpeedDeg = Stats.RotationSpeed * Char.RotationSpeed;
+        if (RotationSpeedDeg > KINDA_SMALL_NUMBER)
+        {
+            CurrentRot.Yaw = FMath::FixedTurn(CurrentRot.Yaw, TargetYaw, RotationSpeedDeg * ActualDeltaTime);
+        }
+        else
+        {
+            CurrentRot.Yaw = TargetYaw;
+        }
+        InOutMassTransform.SetRotation(CurrentRot.Quaternion());
     }
-    
-    InOutMassTransform.SetRotation(NewQuat);
 }
 
 void UActorTransformSyncProcessor::RotateTowardsTarget(AUnitBase* UnitBase, FMassEntityManager& EntityManager, const FMassAITargetFragment& TargetFrag, const FMassCombatStatsFragment& Stats, const FMassAgentCharacteristicsFragment& Char, const FVector& CurrentActorLocation, float ActualDeltaTime, FTransform& InOutMassTransform) const
@@ -359,13 +427,20 @@ void UActorTransformSyncProcessor::RotateTowardsTarget(AUnitBase* UnitBase, FMas
     if (!UnitBase->bUseSkeletalMovement && !UnitBase->bUseIsmWithActorMovement)
         DesiredQuat *= UnitBase->MeshRotationOffset;
     
+    float TargetYaw = DesiredQuat.Rotator().Yaw;
+    FRotator CurrentRot = InOutMassTransform.GetRotation().Rotator();
     const float RotationSpeedDeg = Stats.RotationSpeed * Char.RotationSpeed;
     
-    const FQuat NewQuat = (RotationSpeedDeg > KINDA_SMALL_NUMBER * 10.f)
-        ? FMath::QInterpConstantTo(InOutMassTransform.GetRotation(), DesiredQuat, ActualDeltaTime, FMath::DegreesToRadians(RotationSpeedDeg))
-        : DesiredQuat;
+    if (RotationSpeedDeg > KINDA_SMALL_NUMBER * 10.f)
+    {
+        CurrentRot.Yaw = FMath::FixedTurn(CurrentRot.Yaw, TargetYaw, RotationSpeedDeg * ActualDeltaTime);
+    }
+    else
+    {
+        CurrentRot.Yaw = TargetYaw;
+    }
     
-    InOutMassTransform.SetRotation(NewQuat);
+    InOutMassTransform.SetRotation(CurrentRot.Quaternion());
 }
 
 bool UActorTransformSyncProcessor::RotateTowardsAbility(AUnitBase* UnitBase, const FMassAITargetFragment& AbilityTarget, const FMassCombatStatsFragment& Stats, const FMassAgentCharacteristicsFragment& Char, const FVector& CurrentActorLocation, float ActualDeltaTime, FTransform& InOutMassTransform) const
@@ -386,21 +461,23 @@ bool UActorTransformSyncProcessor::RotateTowardsAbility(AUnitBase* UnitBase, con
         DesiredQuat *= UnitBase->MeshRotationOffset;
     }
 
-    // --- Interpolate rotation ---
+    float TargetYaw = DesiredQuat.Rotator().Yaw;
+    FRotator CurrentRot = InOutMassTransform.GetRotation().Rotator();
     const float RotationSpeedDeg = Stats.RotationSpeed * Char.RotationSpeed;
-    const FQuat CurrentQuat = InOutMassTransform.GetRotation();
 
-    // Interpolate towards the desired rotation or set it instantly if speed is negligible
-    const FQuat NewQuat = (RotationSpeedDeg > KINDA_SMALL_NUMBER * 10.f)
-        ? FMath::QInterpConstantTo(CurrentQuat, DesiredQuat, ActualDeltaTime, FMath::DegreesToRadians(RotationSpeedDeg))
-        : DesiredQuat;
+    if (RotationSpeedDeg > KINDA_SMALL_NUMBER * 10.f)
+    {
+        CurrentRot.Yaw = FMath::FixedTurn(CurrentRot.Yaw, TargetYaw, RotationSpeedDeg * ActualDeltaTime);
+    }
+    else
+    {
+        CurrentRot.Yaw = TargetYaw;
+    }
 
-    InOutMassTransform.SetRotation(NewQuat);
+    InOutMassTransform.SetRotation(CurrentRot.Quaternion());
 
     // Determine if we reached the desired facing (yaw only)
-    const float DesiredYaw = DesiredQuat.Rotator().Yaw;
-    const float NewYaw = NewQuat.Rotator().Yaw;
-    const float YawDelta = FMath::Abs(FMath::FindDeltaAngleDegrees(NewYaw, DesiredYaw));
+    const float YawDelta = FMath::Abs(FMath::FindDeltaAngleDegrees(CurrentRot.Yaw, TargetYaw));
     const float ReachedToleranceDeg = 2.0f; // tolerance for considering rotation reached
 
     return YawDelta <= ReachedToleranceDeg;
@@ -462,7 +539,7 @@ void UActorTransformSyncProcessor::DispatchPendingUpdates(TArray<FActorTransform
                     }
                     else
                     {
-                        Unit->Multicast_UpdateISMInstanceTransform(Update.InstanceIndex, Update.NewTransform);
+                        Unit->Multicast_UpdateISMInstanceTransform_Implementation(Update.InstanceIndex, Update.NewTransform);
                     }
                 }
             }
@@ -530,7 +607,10 @@ void UActorTransformSyncProcessor::ExecuteClient(FMassEntityManager& EntityManag
             AActor* Actor = ActorFragments[i].GetMutable();
             AUnitBase* UnitBase = Cast<AUnitBase>(Actor);
             if (!IsValid(UnitBase)) continue;
-
+            
+            const FMassEntityHandle Entity = ChunkContext.GetEntity(i);
+            if (DoesEntityHaveTag(EntityManager, Entity, FMassStateFrozenTag::StaticStruct())) continue;
+            
             FTransform& MassTransform = TransformFragments[i].GetMutableTransform();
             const FQuat CurrentRotation = MassTransform.GetRotation();
             FVector FinalLocation = MassTransform.GetLocation();
@@ -538,15 +618,24 @@ void UActorTransformSyncProcessor::ExecuteClient(FMassEntityManager& EntityManag
             // Determine the actor's current location once
             FVector CurrentActorLocation = UnitBase->GetMassActorLocation();
 
-            // 1. Adjust height for ground snapping or flying
-            HandleGroundAndHeight(UnitBase, CharList[i], CurrentActorLocation, ActualDeltaTime, MassTransform, FinalLocation);
-            
-            // 2. Adjust rotation based on state (moving vs. attacking)
-            const FMassEntityHandle Entity = ChunkContext.GetEntity(i);
-            const bool bIsAttackingOrPaused = DoesEntityHaveTag(EntityManager, Entity, FMassStateAttackTag::StaticStruct()) ||
-                                              DoesEntityHaveTag(EntityManager, Entity, FMassStatePauseTag::StaticStruct());
+            const bool bIsDead = DoesEntityHaveTag(EntityManager, Entity, FMassStateDeadTag::StaticStruct());
 
-            if (TargetList[i].bRotateTowardsAbility)
+            if (bIsDead)
+            {
+                FinalLocation.X = CurrentActorLocation.X;
+                FinalLocation.Y = CurrentActorLocation.Y;
+            }
+
+            // 1. Adjust rotation based on state (moving vs. attacking)
+            const bool bIsAttackingOrPaused = DoesEntityHaveTag(EntityManager, Entity, FMassStateAttackTag::StaticStruct()) ||
+                                              DoesEntityHaveTag(EntityManager, Entity, FMassStatePauseTag::StaticStruct());;
+
+         
+            if (bIsDead)
+            {
+                // Regular rotation updates are skipped for dead units (Death spin is handled in HandleGroundAndHeight)
+            }
+            else if (TargetList[i].bRotateTowardsAbility)
             {
                 const bool bReached = RotateTowardsAbility(UnitBase, TargetList[i], StatsList[i], CharList[i], CurrentActorLocation, ActualDeltaTime, MassTransform);
                 if (bReached)
@@ -562,13 +651,16 @@ void UActorTransformSyncProcessor::ExecuteClient(FMassEntityManager& EntityManag
             {
                 RotateTowardsTarget(UnitBase, EntityManager, TargetList[i], StatsList[i], CharList[i], CurrentActorLocation, ActualDeltaTime, MassTransform);
             }
+
+            // 2. Adjust height for ground snapping or flying
+            HandleGroundAndHeight(UnitBase, CharList[i], CurrentActorLocation, ActualDeltaTime, MassTransform, FinalLocation, bIsDead);
             
             // 3. Apply final location and cache the result
             MassTransform.SetLocation(FinalLocation);
             CharList[i].PositionedTransform = MassTransform;
 
             const bool bLocationChanged = !CurrentActorLocation.Equals(FinalLocation, 0.025f);
-            const bool bRotationChanged = !CurrentRotation.Equals(MassTransform.GetRotation(), 0.025f);
+            const bool bRotationChanged = !CurrentRotation.Equals(MassTransform.GetRotation(), 0.0001f);
 
             if (bLocationChanged || bRotationChanged)
             {
@@ -600,7 +692,7 @@ void UActorTransformSyncProcessor::ExecuteRepClient(FMassEntityManager& EntityMa
     PendingActorUpdates.Reserve(TotalMatchingEntities);
 
     ClientEntityQuery.ForEachEntityChunk(Context,
-        [this, ActualDeltaTime, &PendingActorUpdates](FMassExecutionContext& ChunkContext)
+        [this, &EntityManager, ActualDeltaTime, &PendingActorUpdates](FMassExecutionContext& ChunkContext)
     {
         const int32 NumEntities = ChunkContext.GetNumEntities();
 
@@ -617,7 +709,7 @@ void UActorTransformSyncProcessor::ExecuteRepClient(FMassEntityManager& EntityMa
             AActor* Actor = ActorFragments[i].GetMutable();
             AUnitBase* UnitBase = Cast<AUnitBase>(Actor);
             if (!IsValid(UnitBase)) continue;
-
+        
             const FTransform& ReplicatedTransform = TransformFragments[i].GetTransform();
 
             // Adjust with ground/height logic on client too
@@ -625,7 +717,16 @@ void UActorTransformSyncProcessor::ExecuteRepClient(FMassEntityManager& EntityMa
             FVector FinalLocation = LocalTransform.GetLocation();
             const FVector CurrentActorLocation = UnitBase->GetMassActorLocation();
 
-            HandleGroundAndHeight(UnitBase, CharList[i], CurrentActorLocation, ActualDeltaTime, LocalTransform, FinalLocation);
+            const FMassEntityHandle Entity = ChunkContext.GetEntity(i);
+            const bool bIsDead = DoesEntityHaveTag(EntityManager, Entity, FMassStateDeadTag::StaticStruct());
+
+            if (bIsDead)
+            {
+                FinalLocation.X = CurrentActorLocation.X;
+                FinalLocation.Y = CurrentActorLocation.Y;
+            }
+
+            HandleGroundAndHeight(UnitBase, CharList[i], CurrentActorLocation, ActualDeltaTime, LocalTransform, FinalLocation, bIsDead);
 
             LocalTransform.SetLocation(FinalLocation);
 
@@ -663,9 +764,12 @@ void UActorTransformSyncProcessor::ExecuteServer(FMassEntityManager& EntityManag
 
         for (int32 i = 0; i < NumEntities; ++i)
         {
+            
             AActor* Actor = ActorFragments[i].GetMutable();
             AUnitBase* UnitBase = Cast<AUnitBase>(Actor);
             if (!IsValid(UnitBase)) continue;
+            const FMassEntityHandle Entity = ChunkContext.GetEntity(i);
+            if (DoesEntityHaveTag(EntityManager, Entity, FMassStateFrozenTag::StaticStruct())) continue;
 
             FTransform& MassTransform = TransformFragments[i].GetMutableTransform();
             const FQuat CurrentRotation = MassTransform.GetRotation();
@@ -674,15 +778,23 @@ void UActorTransformSyncProcessor::ExecuteServer(FMassEntityManager& EntityManag
             // Determine the actor's current location once, as it's used by multiple functions
             FVector CurrentActorLocation = UnitBase->GetMassActorLocation();
 
-            // 1. Adjust height for ground snapping or flying
-            HandleGroundAndHeight(UnitBase, CharList[i], CurrentActorLocation, ActualDeltaTime, MassTransform, FinalLocation);
-            
-            // 2. Adjust rotation based on state (moving vs. attacking)
-            const FMassEntityHandle Entity = ChunkContext.GetEntity(i);
+            const bool bIsDead = DoesEntityHaveTag(EntityManager, Entity, FMassStateDeadTag::StaticStruct());
+
+            if (bIsDead)
+            {
+                FinalLocation.X = CurrentActorLocation.X;
+                FinalLocation.Y = CurrentActorLocation.Y;
+            }
+
+            // 1. Adjust rotation based on state (moving vs. attacking)
             const bool bIsAttackingOrPaused = DoesEntityHaveTag(EntityManager, Entity, FMassStateAttackTag::StaticStruct()) ||
                                               DoesEntityHaveTag(EntityManager, Entity, FMassStatePauseTag::StaticStruct());
-
-            if (TargetList[i].bRotateTowardsAbility)
+     
+            if (bIsDead)
+            {
+                // Regular rotation updates are skipped for dead units (Death spin is handled in HandleGroundAndHeight)
+            }
+            else if (TargetList[i].bRotateTowardsAbility)
             {
                 // Pass the consolidated AI Target fragment.
                 const bool bReached = RotateTowardsAbility(UnitBase, TargetList[i], StatsList[i], CharList[i], CurrentActorLocation, ActualDeltaTime, MassTransform);
@@ -699,13 +811,16 @@ void UActorTransformSyncProcessor::ExecuteServer(FMassEntityManager& EntityManag
             {
                 RotateTowardsTarget(UnitBase, EntityManager, TargetList[i], StatsList[i], CharList[i], CurrentActorLocation, ActualDeltaTime, MassTransform);
             }
+
+            // 2. Adjust height for ground snapping or flying
+            HandleGroundAndHeight(UnitBase, CharList[i], CurrentActorLocation, ActualDeltaTime, MassTransform, FinalLocation, bIsDead);
             
             // 3. Apply final location and cache the result
             MassTransform.SetLocation(FinalLocation);
             CharList[i].PositionedTransform = MassTransform;
 
             const bool bLocationChanged = !CurrentActorLocation.Equals(FinalLocation, 0.025f);
-            const bool bRotationChanged = !CurrentRotation.Equals(MassTransform.GetRotation(), 0.025f);
+            const bool bRotationChanged = !CurrentRotation.Equals(MassTransform.GetRotation(), 0.0001f);
             // 4. Queue an update to be performed on the game thread if the transform has changed
          
             if (!bIsClient)

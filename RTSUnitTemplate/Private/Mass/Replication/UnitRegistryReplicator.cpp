@@ -21,8 +21,22 @@
 // 0=Off, 1=Warn, 2=Verbose
 static TAutoConsoleVariable<int32> CVarRTS_Registry_LogLevel(
 	TEXT("net.RTS.Registry.LogLevel"),
-	2,
+	0,
 	TEXT("Logging level for UnitRegistryReplicator diagnostics: 0=Off, 1=Warn, 2=Verbose."),
+	ECVF_Default);
+
+// Grace period before client starts destroying unregistered units (allows time for registration to complete)
+static TAutoConsoleVariable<float> CVarRTS_Registry_ClientReconcileGracePeriod(
+	TEXT("net.RTS.Registry.ClientReconcileGracePeriod"),
+	15.0f,
+	TEXT("Seconds after world start before client starts destroying unregistered units. Default 15s to allow full registration."),
+	ECVF_Default);
+
+// Diagnostics timer interval - faster during startup, slower after
+static TAutoConsoleVariable<float> CVarRTS_Registry_DiagnosticsInterval(
+	TEXT("net.RTS.Registry.DiagnosticsInterval"),
+	1.0f,
+	TEXT("Seconds between server diagnostics ticks. Default 1s for faster startup registration."),
 	ECVF_Default);
 
 namespace { inline int32 RegLogLevel(){ return CVarRTS_Registry_LogLevel.GetValueOnGameThread(); } }
@@ -44,9 +58,11 @@ void AUnitRegistryReplicator::BeginPlay()
 	{
 		ResetNetIDCounter();
 		// Start periodic diagnostics on server to detect unregistered/stale units
+		// Use CVAR-controlled interval (default 1s) for faster startup registration
 		if (UWorld* W = GetWorld())
 		{
-			W->GetTimerManager().SetTimer(DiagnosticsTimerHandle, this, &AUnitRegistryReplicator::ServerDiagnosticsTick, 5.0f, true, 5.0f);
+			const float DiagInterval = FMath::Max(0.5f, CVarRTS_Registry_DiagnosticsInterval.GetValueOnGameThread());
+			W->GetTimerManager().SetTimer(DiagnosticsTimerHandle, this, &AUnitRegistryReplicator::ServerDiagnosticsTick, DiagInterval, true, 0.5f);
 		}
 	}
 }
@@ -54,12 +70,50 @@ void AUnitRegistryReplicator::BeginPlay()
 void AUnitRegistryReplicator::ResetNetIDCounter()
 {
 	NextNetID = 1;
+	QuarantinedNetIDs.Empty();
 }
 
 uint32 AUnitRegistryReplicator::GetNextNetID()
 {
-	// Return current and increment
-	return NextNetID++;
+	const double Now = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0;
+	
+	// Skip any IDs that are currently in quarantine
+	while (true)
+	{
+		const uint32 TrialID = NextNetID++;
+		
+		double* Expiration = QuarantinedNetIDs.Find(TrialID);
+		if (Expiration)
+		{
+			if (Now < *Expiration)
+			{
+				// Still quarantined, skip it
+				continue;
+			}
+			else
+			{
+				// Expired, we can use it (and remove from map)
+				QuarantinedNetIDs.Remove(TrialID);
+				return TrialID;
+			}
+		}
+		
+		// Not in quarantine, use it
+		return TrialID;
+	}
+}
+
+void AUnitRegistryReplicator::QuarantineNetID(uint32 NetID)
+{
+	if (NetID == 0) return;
+	
+	const double Now = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0;
+	QuarantinedNetIDs.Add(NetID, Now + static_cast<double>(NetIDQuarantineTime));
+	
+	if (RegLogLevel() >= 2)
+	{
+		//UE_LOG(LogTemp, Log, TEXT("[RTS.Registry] Quarantined NetID %u for %.1fs"), NetID, NetIDQuarantineTime);
+	}
 }
 
 void AUnitRegistryReplicator::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const
@@ -88,34 +142,56 @@ void AUnitRegistryReplicator::OnRep_Registry()
 		ServerDiagnosticsTick(); // safe call on client - function will early return if NM_Client
 
 		// Client-side reconcile: destroy zombie actors that are not in registry or have invalid Mass binding
+		// BUT only after the grace period has passed to allow time for registration to complete
 		if (World->GetNetMode() == NM_Client)
 		{
-			// Build quick sets for lookup
-			TSet<int32> RegIndices;
-			TSet<FName> RegOwners;
-			RegIndices.Reserve(Registry.Items.Num());
-			RegOwners.Reserve(Registry.Items.Num());
-			for (const FUnitRegistryItem& It : Registry.Items)
+			const float WorldTime = World->GetTimeSeconds();
+			const float GracePeriod = CVarRTS_Registry_ClientReconcileGracePeriod.GetValueOnGameThread();
+			const bool bInGracePeriod = (WorldTime < GracePeriod);
+			
+			// During grace period, only log warnings but don't destroy units
+			// This prevents destroying units that are still being registered
+			if (bInGracePeriod)
 			{
-				if (It.UnitIndex != INDEX_NONE) { RegIndices.Add(It.UnitIndex); }
-				if (It.OwnerName != NAME_None) { RegOwners.Add(It.OwnerName); }
-			}
-			int32 Cleaned = 0;
-			for (TActorIterator<AUnitBase> It(World); It; ++It)
-			{
-				AUnitBase* Unit = *It;
-				if (!IsValid(Unit)) { continue; }
-				// Do NOT destroy units simply because they are Dead; keep them until actor/entity despawns.
-				const bool bInReg = (Unit->UnitIndex != INDEX_NONE && RegIndices.Contains(Unit->UnitIndex)) || RegOwners.Contains(Unit->GetFName());
-				bool bHasValidBinding = false;
-				if (UMassActorBindingComponent* Bind = Unit->FindComponentByClass<UMassActorBindingComponent>())
+				if (RegLogLevel() >= 2)
 				{
-					bHasValidBinding = Bind->GetEntityHandle().IsSet();
+					UE_LOG(LogTemp, Verbose, TEXT("[RTS.Registry] Client in grace period (%.1fs < %.1fs), skipping zombie cleanup."), WorldTime, GracePeriod);
 				}
-				if (!bInReg || !bHasValidBinding)
+			}
+			else
+			{
+				// Build quick sets for lookup
+				TSet<int32> RegIndices;
+				RegIndices.Reserve(Registry.Items.Num());
+				for (const FUnitRegistryItem& It : Registry.Items)
 				{
-					Unit->Destroy();
-					++Cleaned;
+					if (It.UnitIndex != INDEX_NONE) { RegIndices.Add(It.UnitIndex); }
+				}
+				int32 Cleaned = 0;
+				for (TActorIterator<AUnitBase> It(World); It; ++It)
+				{
+					AUnitBase* Unit = *It;
+					if (!IsValid(Unit)) { continue; }
+					// Do NOT destroy units simply because they are Dead; keep them until actor/entity despawns.
+					// Use ONLY UnitIndex for registry check on client. OwnerName (GetFName) is unstable.
+					const bool bInReg = (Unit->UnitIndex != INDEX_NONE && RegIndices.Contains(Unit->UnitIndex));
+					bool bHasValidBinding = false;
+					if (UMassActorBindingComponent* Bind = Unit->FindComponentByClass<UMassActorBindingComponent>())
+					{
+						bHasValidBinding = Bind->GetEntityHandle().IsSet();
+					}
+					if (!bInReg || !bHasValidBinding)
+					{
+						// Final sanity check: if it's dead, we might be keeping it for visuals, but if it's not in registry at all, it's a ghost.
+						// If it's not dead but also not in registry, it's definitely a ghost.
+						if (RegLogLevel() >= 1)
+						{
+							UE_LOG(LogTemp, Warning, TEXT("[RTS.Registry] Client reconcile destroying zombie Unit %s (Index=%d, HasBinding=%d)"), 
+								*Unit->GetName(), Unit->UnitIndex, bHasValidBinding ? 1 : 0);
+						}
+						Unit->Destroy();
+						++Cleaned;
+					}
 				}
 			}
 
@@ -140,9 +216,9 @@ void AUnitRegistryReplicator::OnRep_Registry()
 				}
 				if (Trimmed > 0)
 				{
-					if (RegLogLevel() >= 2)
+					if (RegLogLevel() >= 1)
 					{
-						UE_LOG(LogTemp, Verbose, TEXT("[RTS.Replication] Client trimmed %d stale NetIDs from UnitReplicationCache after registry update."), Trimmed);
+						UE_LOG(LogTemp, Warning, TEXT("[RTS.Replication] Client trimmed %d stale NetIDs from UnitReplicationCache after registry update."), Trimmed);
 					}
 				}
 			}
@@ -240,25 +316,27 @@ static void RunDiagnosticsForWorld(UWorld& World, const FUnitRegistryArray& Regi
 
 		if (RegLogLevel() >= 1)
 		{
+			/*
 			UE_LOG(LogTemp, Warning, TEXT("[RTS.Replication] DIAG[%s|%s]: LiveUnits=%d, Registry=%d, Missing(Index)=%d, Missing(Owner)=%d, Stale(Index)=%d, Stale(Owner)=%d"),
 				Context, ModeStr, LiveUnits, RegCount, MissingByIndex.Num(), MissingByOwner.Num(), StaleByIndex.Num(), StaleByOwner.Num());
+			*/
 			if (RegLogLevel() >= 2)
 			{
 				if (MissingByIndex.Num() > 0)
 				{
-					UE_LOG(LogTemp, Warning, TEXT("  Missing UnitIndex -> Not in Registry: [%s]"), *JoinInts(MissingByIndex));
+					//UE_LOG(LogTemp, Warning, TEXT("  Missing UnitIndex -> Not in Registry: [%s]"), *JoinInts(MissingByIndex));
 				}
 				if (MissingByOwner.Num() > 0)
 				{
-					UE_LOG(LogTemp, Warning, TEXT("  Missing OwnerName -> Not in Registry: [%s]"), *JoinNames(MissingByOwner));
+					//UE_LOG(LogTemp, Warning, TEXT("  Missing OwnerName -> Not in Registry: [%s]"), *JoinNames(MissingByOwner));
 				}
 				if (StaleByIndex.Num() > 0)
 				{
-					UE_LOG(LogTemp, Warning, TEXT("  Stale Registry UnitIndex -> No longer in world: [%s]"), *JoinInts(StaleByIndex));
+					//UE_LOG(LogTemp, Warning, TEXT("  Stale Registry UnitIndex -> No longer in world: [%s]"), *JoinInts(StaleByIndex));
 				}
 				if (StaleByOwner.Num() > 0)
 				{
-					UE_LOG(LogTemp, Warning, TEXT("  Stale Registry OwnerName -> No longer in world: [%s]"), *JoinNames(StaleByOwner));
+					//UE_LOG(LogTemp, Warning, TEXT("  Stale Registry OwnerName -> No longer in world: [%s]"), *JoinNames(StaleByOwner));
 				}
 			}
 		}
@@ -268,7 +346,7 @@ static void RunDiagnosticsForWorld(UWorld& World, const FUnitRegistryArray& Regi
 		// Low verbosity success summary
 		if (RegLogLevel() >= 2)
 		{
-			UE_LOG(LogTemp, Verbose, TEXT("[RTS.Replication] DIAG[%s|%s]: OK LiveUnits=%d Registry=%d"), Context, ModeStr, LiveUnits, RegCount);
+			//UE_LOG(LogTemp, Verbose, TEXT("[RTS.Replication] DIAG[%s|%s]: OK LiveUnits=%d Registry=%d"), Context, ModeStr, LiveUnits, RegCount);
 		}
 	}
 }
@@ -285,13 +363,11 @@ void AUnitRegistryReplicator::ServerDiagnosticsTick()
 		{
 			// Build sets of currently live actors' keys
 			TSet<int32> LiveIndices;
-			TSet<FName> LiveOwners;
 			for (TActorIterator<AUnitBase> It(W); It; ++It)
 			{
 				AUnitBase* Unit = *It;
 				if (!IsValid(Unit)) continue;
 				// Include dead units as live for replication/registry until they despawn
-				LiveOwners.Add(Unit->GetFName());
 				if (Unit->UnitIndex != INDEX_NONE)
 				{
 					LiveIndices.Add(Unit->UnitIndex);
@@ -300,13 +376,10 @@ void AUnitRegistryReplicator::ServerDiagnosticsTick()
 
 			// Build sets of registry keys for quick lookup
 			TSet<int32> RegIndices;
-			TSet<FName> RegOwners;
 			RegIndices.Reserve(Registry.Items.Num());
-			RegOwners.Reserve(Registry.Items.Num());
 			for (const FUnitRegistryItem& Itm : Registry.Items)
 			{
 				if (Itm.UnitIndex != INDEX_NONE) { RegIndices.Add(Itm.UnitIndex); }
-				if (Itm.OwnerName != NAME_None) { RegOwners.Add(Itm.OwnerName); }
 			}
 
 			// Safety net: insert any missing live units into the registry immediately
@@ -318,7 +391,10 @@ void AUnitRegistryReplicator::ServerDiagnosticsTick()
 				AUnitBase* Unit = *It2;
 				if (!IsValid(Unit)) continue;
 				if (Unit->UnitState == UnitData::Dead) continue;
-				const bool bMissing = (Unit->UnitIndex == INDEX_NONE || !RegIndices.Contains(Unit->UnitIndex)) && !RegOwners.Contains(Unit->GetFName());
+				// Do not register units that are not supposed to have Mass
+				if (!Unit->FindComponentByClass<UMassActorBindingComponent>()) continue;
+
+				const bool bMissing = (Unit->UnitIndex == INDEX_NONE || !RegIndices.Contains(Unit->UnitIndex));
 				if (bMissing)
 				{
 					FMassNetworkID NetIDValue;
@@ -366,10 +442,29 @@ void AUnitRegistryReplicator::ServerDiagnosticsTick()
 			for (int32 i = Registry.Items.Num() - 1; i >= 0; --i)
 			{
 				const FUnitRegistryItem& Itm = Registry.Items[i];
-				const bool bOwnerGone = (Itm.OwnerName != NAME_None) && !LiveOwners.Contains(Itm.OwnerName);
 				const bool bIndexGone = (Itm.UnitIndex != INDEX_NONE) && !LiveIndices.Contains(Itm.UnitIndex);
-				if (bOwnerGone || bIndexGone)
+				
+				// Extra safety: Check if the actor name still refers to the same UnitIndex
+				bool bOwnerReused = false;
+				if (Itm.OwnerName != NAME_None)
 				{
+					// Use a cheap search for the actor by name
+					for (TActorIterator<AUnitBase> It(W); It; ++It)
+					{
+						if (It->GetFName() == Itm.OwnerName)
+						{
+							if (It->UnitIndex != Itm.UnitIndex)
+							{
+								bOwnerReused = true;
+							}
+							break;
+						}
+					}
+				}
+
+				if (bIndexGone || bOwnerReused)
+				{
+					QuarantineNetID(Itm.NetID.GetValue());
 					Registry.Items.RemoveAt(i);
 					++Removed;
 				}
@@ -432,4 +527,83 @@ AUnitRegistryReplicator* AUnitRegistryReplicator::GetOrSpawn(UWorld& World)
 		return Actor;
 	}
 	return nullptr;
+}
+
+bool AUnitRegistryReplicator::AreAllUnitsRegistered() const
+{
+	int32 Registered = 0;
+	int32 Total = 0;
+	GetRegistrationCounts(Registered, Total);
+	return (Total == 0) || (Registered >= Total);
+}
+
+float AUnitRegistryReplicator::GetRegistrationProgress() const
+{
+	int32 Registered = 0;
+	int32 Total = 0;
+	GetRegistrationCounts(Registered, Total);
+	if (Total == 0)
+	{
+		return 1.0f; // No units = fully registered
+	}
+	return FMath::Clamp(static_cast<float>(Registered) / static_cast<float>(Total), 0.0f, 1.0f);
+}
+
+void AUnitRegistryReplicator::GetRegistrationCounts(int32& OutRegistered, int32& OutTotal) const
+{
+	OutRegistered = 0;
+	OutTotal = 0;
+	
+	UWorld* World = GetWorld();
+	if (!World)
+	{
+		return;
+	}
+	
+	// Build lookup sets from registry
+	TSet<int32> RegIndices;
+	TSet<FName> RegOwners;
+	RegIndices.Reserve(Registry.Items.Num());
+	RegOwners.Reserve(Registry.Items.Num());
+	for (const FUnitRegistryItem& It : Registry.Items)
+	{
+		if (It.UnitIndex != INDEX_NONE)
+		{
+			RegIndices.Add(It.UnitIndex);
+		}
+		if (It.OwnerName != NAME_None)
+		{
+			RegOwners.Add(It.OwnerName);
+		}
+	}
+	
+	// Count live units and check if they're registered
+	for (TActorIterator<AUnitBase> It(World); It; ++It)
+	{
+		AUnitBase* Unit = *It;
+		if (!IsValid(Unit))
+		{
+			continue;
+		}
+		// Skip dead units - they don't need to be registered
+		if (Unit->UnitState == UnitData::Dead)
+		{
+			continue;
+		}
+		
+		// Only count units that are supposed to have Mass (to avoid blocking on props/actors that don't register)
+		if (!Unit->FindComponentByClass<UMassActorBindingComponent>())
+		{
+			continue;
+		}
+
+		OutTotal++;
+		
+		// Check if this unit is in the registry (by UnitIndex ONLY)
+		const bool bInRegistry = (Unit->UnitIndex != INDEX_NONE && RegIndices.Contains(Unit->UnitIndex));
+		if (bInRegistry)
+		{
+			OutRegistered++;
+		}
+	}
 }

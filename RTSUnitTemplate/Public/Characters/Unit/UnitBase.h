@@ -34,6 +34,9 @@ public:
 	UPROPERTY()
 	TObjectPtr<AActor> NavObstacleProxy;
 
+	UPROPERTY(Replicated, EditAnywhere, BlueprintReadWrite, Category = RTSUnitTemplate)
+	float NavObstaclePadding = 5.0f;
+
 	UFUNCTION(NetMulticast, Reliable)
 	void Multicast_RegisterBuildingAsObstacle();
 
@@ -204,18 +207,15 @@ public:
 	UFUNCTION(Server, Reliable, BlueprintCallable, Category = RTSUnitTemplate)
 	void SetWalkSpeed(float Speed);
 	
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, meta = (DisplayName = "StopRunTolerance", Keywords = "RTSUnitTemplate StopRunTolerance"), Category = RTSUnitTemplate)
-		float StopRunTolerance = 100.f;
-
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, meta = (DisplayName = "StopRunToleranceY", Keywords = "RTSUnitTemplate StopRunToleranceY"), Category = RTSUnitTemplate)
-		float StopRunToleranceForFlying = 100.f;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = RTSUnitTemplate)
+		float MovementAcceptanceRadius = 50.f;
 ///////////////////////////////////////////////////////////////////
 
 // related to Animations  //////////////////////////////////////////
 public:
 	
 	UPROPERTY(Replicated, BlueprintReadWrite, meta = (DisplayName = "UnitToChase", Keywords = "RTSUnitTemplate UnitToChase"), Category = RTSUnitTemplate)
-	AUnitBase* UnitToChase;
+	AUnitBase* UnitToChase = nullptr;
 
 	UPROPERTY(BlueprintReadWrite, meta = (DisplayName = "UnitsToChase", Keywords = "RTSUnitTemplate UnitsToChase"), Category = RTSUnitTemplate)
 	TArray <AUnitBase*> UnitsToChase;
@@ -230,7 +230,10 @@ public:
 // related to Waypoints  //////////////////////////////////////////
 public:
 	UPROPERTY(Replicated, EditAnywhere, BlueprintReadWrite, meta = (DisplayName = "NextWaypoint", Keywords = "RTSUnitTemplate NextWaypoint"), Category = RTSUnitTemplate)
-	class AWaypoint* NextWaypoint;
+	class AWaypoint* NextWaypoint = nullptr;
+
+	UFUNCTION(BlueprintCallable, BlueprintPure, Category = RTSUnitTemplate)
+	class AWaypoint* GetNextWaypoint() const;
 
 	UFUNCTION(BlueprintCallable, meta = (DisplayName = "SetWaypoint", Keywords = "RTSUnitTemplate SetWaypoint"), Category = RTSUnitTemplate)
 	void SetWaypoint(class AWaypoint* NewNextWaypoint);
@@ -258,8 +261,7 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = RTSUnitTemplate)
 	float UnderAttackNotificationCooldown = 10.0f;
 	
-	UFUNCTION(Server, Reliable, BlueprintCallable, meta = (DisplayName = "SetHealth", Keywords = "RTSUnitTemplate SetHealth"), Category = RTSUnitTemplate)
-	void SetHealth(float NewHealth);
+	virtual void SetHealth_Implementation(float NewHealth) override;
 
 	// Fires when health crosses 25% or 50% thresholds either upwards or downwards.
 	// DidIncrease: true if health rose above the threshold, false if it dropped below it.
@@ -278,8 +280,7 @@ public:
 	UFUNCTION(BlueprintCallable, Category = RTSUnitTemplate)
 	void DeadEffectsAndEvents();
 	
-	UFUNCTION(Server, Reliable, BlueprintCallable, meta = (DisplayName = "SetHealth", Keywords = "RTSUnitTemplate SetHealth"), Category = RTSUnitTemplate)
-	void SetShield(float NewHealth);
+	virtual void SetShield_Implementation(float NewShield) override;
 
 	UFUNCTION(BlueprintCallable, Category = RTSUnitTemplate)
 	void InitHealthbarOwner();
@@ -359,6 +360,14 @@ public:
 	UFUNCTION(Server, Reliable, BlueprintCallable, Category = RTSUnitTemplate)
 	void SpawnProjectileFromClassWithAim(FVector Aim, TSubclassOf<class AProjectile> ProjectileClass, int MaxPiercedTargets, int ProjectileCount, float Spread, bool IsBouncingNext, bool IsBouncingBack, float ZOffset, float Scale = 1.f);
 	
+	/** 
+	 * Returns the world location for spawning projectiles.
+	 * Checks for a USceneComponent with the tag "ProjectileSpawn" first.
+	 * Falls back to standard offset logic if not found.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "RTSUnitTemplate|Projectile")
+	FVector GetProjectileSpawnLocation(const FVector& AdditionalOffset = FVector::ZeroVector) const;
+
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, meta = (DisplayName = "UseProjectile", Keywords = "RTSUnitTemplate UseProjectile"), Category = RTSUnitTemplate)
 	bool UseProjectile = false;
 
@@ -411,7 +420,6 @@ public:
 	
 	UFUNCTION(BlueprintCallable, Category = Ability)
 	TArray<AUnitBase*> SpawnUnitsFromParameters(
-		TSubclassOf<class AAIController> AIControllerBaseClass,
 		TSubclassOf<class AUnitBase> UnitBaseClass, UMaterialInstance* Material, USkeletalMesh* CharacterMesh, FRotator HostMeshRotation, FVector Location,
 		TEnumAsByte<UnitData::EState> UState,
 		TEnumAsByte<UnitData::EState> UStatePlaceholder,

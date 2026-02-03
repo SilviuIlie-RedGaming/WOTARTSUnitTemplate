@@ -9,6 +9,7 @@
 #include "GAS/GameplayAbilityBase.h"
 #include "Actors/WorkArea.h"
 #include <Components/ProgressBar.h>
+#include "Components/TextBlock.h"
 #include "Components/Widget.h"
 #include "Components/HorizontalBox.h"
 #include "Components/Image.h"
@@ -176,6 +177,12 @@ void UUnitTimerWidget::TimerTick()
 				TimerBar->SetPercent(Percent);
 				TimerBar->SetFillColorAndOpacity(TransportColor);
 				MyWidgetIsVisible = (UnitBase->CurrentUnitsLoaded > 0);
+
+				if (TransportText)
+				{
+					const FString LoadString = FString::Printf(TEXT("%d/%d"), UnitBase->CurrentUnitsLoaded, UnitBase->MaxTransportUnits);
+					TransportText->SetText(FText::FromString(LoadString));
+				}
 			}
 			else
 			{

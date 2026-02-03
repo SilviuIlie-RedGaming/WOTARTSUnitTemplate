@@ -31,6 +31,9 @@ USTRUCT() struct FMassStateDeadTag : public FMassTag { GENERATED_BODY() };
 USTRUCT() struct FMassStateRunTag : public FMassTag { GENERATED_BODY() }; // Generischer Bewegungs-Tag (für Run/Patrol)
 USTRUCT() struct FMassStateDetectTag : public FMassTag { GENERATED_BODY() };
 USTRUCT() struct FMassStateStopMovementTag : public FMassTag { GENERATED_BODY() };
+USTRUCT() struct FMassStateStopSeparationTag : public FMassTag { GENERATED_BODY() };
+
+USTRUCT() struct FMassStateFrozenTag : public FMassTag { GENERATED_BODY() };
 USTRUCT() struct FMassStateDisableObstacleTag : public FMassTag { GENERATED_BODY() };
 USTRUCT() struct FMassStateDisableNavManipulationTag : public FMassTag { GENERATED_BODY() };
 // New tag to freeze only horizontal (X/Y) movement while allowing Z updates (e.g., landing)
@@ -57,6 +60,7 @@ USTRUCT() struct FMassStateEvasionTag : public FMassTag { GENERATED_BODY() };
 USTRUCT() struct FMassStateRootedTag : public FMassTag { GENERATED_BODY() };
 USTRUCT() struct FMassStateCastingTag : public FMassTag { GENERATED_BODY() };
 USTRUCT() struct FMassStateIsAttackedTag : public FMassTag { GENERATED_BODY() };
+USTRUCT() struct FMassSoftAvoidanceTag : public FMassTag { GENERATED_BODY() };
 
 // --- Hilfs-Tags ---
 USTRUCT() struct FMassHasTargetTag : public FMassTag { GENERATED_BODY() }; // Wenn bHasValidTarget true ist
@@ -403,7 +407,6 @@ struct FMassAITargetFragment : public FMassFragment
 
 	UPROPERTY(VisibleAnywhere, Category = "AI", Transient)
 	float FollowOffset = 0.f;
-
 };
 
 //----------------------------------------------------------------------//
@@ -479,6 +482,9 @@ struct FMassCombatStatsFragment : public FMassFragment
      /** Flag, ob die Einheit Projektile verwendet. */
      UPROPERTY(EditAnywhere, Category = "Stats")
      bool bUseProjectile = false;
+
+	UPROPERTY(EditAnywhere, Category = "Stats")
+	float MinRange = 0.f;
 };
 
 //----------------------------------------------------------------------//
@@ -536,6 +542,12 @@ struct FMassAgentCharacteristicsFragment : public FMassFragment
 
 	UPROPERTY(EditAnywhere, Category = "Characteristics")
 	float CapsuleRadius = 60.f;
+
+	UPROPERTY(EditAnywhere, Category = "Characteristics")
+	float VerticalDeathRotationMultiplier = 0.f;
+
+	UPROPERTY(EditAnywhere, Category = "Characteristics")
+	bool GroundAlignment = true;
     // UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Characteristics")
     // bool bIsOnPlattform = false; // Dein Plattform-Flag
 };
@@ -784,6 +796,9 @@ namespace UnitTagBits
 	static constexpr uint32 Repair              = 1u << 22;
 	// Control: stop only horizontal motion while allowing vertical updates
 	static constexpr uint32 StopXYMovement      = 1u << 23;
+	// Startup freeze state
+	static constexpr uint32 Frozen              = 1u << 24;
+	static constexpr uint32 SoftAvoidance       = 1u << 25;
 }
 
 
@@ -813,8 +828,10 @@ inline uint32 BuildReplicatedTagBits(const FMassEntityManager& EntityManager, FM
 	if (H(FMassStateEvasionTag::StaticStruct()))              Bits |= UnitTagBits::Evasion;
 	// Always replicated control bits
 	if (H(FMassStateStopMovementTag::StaticStruct()))         Bits |= UnitTagBits::StopMovement;
+	if (H(FMassStateFrozenTag::StaticStruct()))               Bits |= UnitTagBits::Frozen;
 	if (H(FMassStateDisableObstacleTag::StaticStruct()))      Bits |= UnitTagBits::DisableObstacle;
 	if (H(FMassStateStopXYMovementTag::StaticStruct()))       Bits |= UnitTagBits::StopXYMovement;
+	if (H(FMassSoftAvoidanceTag::StaticStruct()))             Bits |= UnitTagBits::SoftAvoidance;
 	//if (H(FMassStateRunTag::StaticStruct()))                  Bits |= UnitTagBits::Run;
 	//if (H(FMassStateIdleTag::StaticStruct()))                 Bits |= UnitTagBits::Idle;
 	return Bits;
@@ -841,8 +858,10 @@ inline void ApplyReplicatedTagBits(FMassEntityManager& EntityManager, FMassEntit
 
 	// Always replicate/control these tags regardless of death state
 	SetTag(UnitTagBits::StopMovement,        FMassStateStopMovementTag());
+	SetTag(UnitTagBits::Frozen,              FMassStateFrozenTag());
 	SetTag(UnitTagBits::DisableObstacle,     FMassStateDisableObstacleTag());
 	SetTag(UnitTagBits::StopXYMovement,      FMassStateStopXYMovementTag());
+	SetTag(UnitTagBits::SoftAvoidance,       FMassSoftAvoidanceTag());
 
 	// If the client already has Dead tag AND Health <= 0 on client, skip replication of other state tags
 	const bool bClientHasDead = DoesEntityHaveTag(EntityManager, Entity, FMassStateDeadTag::StaticStruct());

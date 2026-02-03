@@ -133,6 +133,12 @@ public:
 	float RotationSpeed = 15.f;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Mass")
+	float MinRange = 0.f;
+	
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Mass")
+	float MaxAcceleration = 4000.0f;
+	
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Mass")
 	float AdditionalCapsuleRadius = 0.f;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Mass")
@@ -140,4 +146,13 @@ public:
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Mass")
 	float FollowOffset = 0.f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Mass")
+	float VerticalDeathRotationMultiplier = 0.f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Mass")
+	bool StopSeparation = false;
+	
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Mass")
+	bool GroundAlignment = true;
 };

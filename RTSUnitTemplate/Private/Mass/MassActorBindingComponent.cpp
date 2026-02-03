@@ -28,6 +28,7 @@
 #include "MassSignalSubsystem.h"
 #include "Actors/Waypoint.h"
 #include "Characters/Unit/UnitBase.h"
+#include "GameModes/RTSGameModeBase.h"
 #include "Mass/Replication/UnitReplicationCacheSubsystem.h"
 #include "MassReplicationFragments.h"
 #include "MassReplicationSubsystem.h"
@@ -44,6 +45,75 @@
 #include "EngineUtils.h"
 #include "Mass/Replication/MassUnitReplicatorBase.h"
 #include "Mass/Replication/ReplicationBootstrap.h"
+#include "GameStates/ResourceGameState.h"
+
+// CVAR for startup freeze
+static TAutoConsoleVariable<int32> CVarRTS_StartupFreeze_Enable(
+	TEXT("net.RTS.StartupFreeze.Enable"),
+	1,
+	TEXT("When 1, units are frozen with FMassStateStopMovementTag until registration and loading phase are complete."),
+	ECVF_Default);
+
+static void ApplyInitialStartupFreeze(AActor* Owner, FMassEntityManager& EM, FMassEntityHandle Entity)
+{
+	UWorld* World = Owner ? Owner->GetWorld() : nullptr;
+	if (!World || World->GetNetMode() == NM_Client || CVarRTS_StartupFreeze_Enable.GetValueOnGameThread() == 0)
+	{
+		return;
+	}
+
+	bool bShouldFreeze = false;
+	AResourceGameState* GS = World->GetGameState<AResourceGameState>();
+	
+	if (GS)
+	{
+		// If match already started/released, do not freeze new units.
+		if (GS->bStartupFreezeReleased)
+		{
+			return;
+		}
+
+		// If MatchStartTime is set, freeze until reached.
+		if (GS->MatchStartTime > 0.f && World->GetTimeSeconds() < GS->MatchStartTime)
+		{
+			bShouldFreeze = true;
+		}
+	}
+	else
+	{
+		// No GameState yet? Definitely freeze as we are very early in the startup.
+		bShouldFreeze = true;
+	}
+
+	if (!bShouldFreeze)
+	{
+		// Registration not complete? 
+		// In Standalone or Singleplayer, we don't wait for registration once time is reached (or if no time set).
+		const bool bIsMultiplayer = (World->GetNetMode() == NM_DedicatedServer || World->GetNumPlayerControllers() > 1);
+		if (bIsMultiplayer)
+		{
+			if (AUnitRegistryReplicator* Reg = AUnitRegistryReplicator::GetOrSpawn(*World))
+			{
+				if (!Reg->AreAllUnitsRegistered())
+				{
+					bShouldFreeze = true;
+				}
+			}
+		}
+	}
+
+	if (bShouldFreeze)
+	{
+		EM.AddTagToEntity(Entity, FMassStateFrozenTag::StaticStruct());
+		if (ACharacter* Character = Cast<ACharacter>(Owner))
+		{
+			if (UCharacterMovementComponent* MoveComp = Character->GetCharacterMovement())
+			{
+				MoveComp->SetMovementMode(MOVE_None);
+			}
+		}
+	}
+}
 
 
 UMassActorBindingComponent::UMassActorBindingComponent()
@@ -128,6 +198,7 @@ void UMassActorBindingComponent::ConfigureNewEntity(FMassEntityManager& EntityMa
 	InitMovementFragments(EntityManager, Entity);
 	InitAIFragments(EntityManager, Entity);
 	InitRepresentation(EntityManager, Entity);
+	
 	bNeedsMassUnitSetup = false;
 	AUnitBase* UnitBase = Cast<AUnitBase>(MyOwner);
 	UnitBase->bIsMassUnit = true;
@@ -179,47 +250,69 @@ FMassEntityHandle UMassActorBindingComponent::CreateAndLinkOwnerToMassEntity()
 		{
 			// Perform synchronous initializations
 			MassEntityHandle = NewMassEntityHandle;
+			ApplyInitialStartupFreeze(MyOwner, EM, NewMassEntityHandle);
 			InitTransform(EM, NewMassEntityHandle);
 			InitMovementFragments(EM, NewMassEntityHandle);
 			InitAIFragments(EM, NewMassEntityHandle);
 			InitRepresentation(EM, NewMassEntityHandle);
+
+			if (StopSeparation)
+			{
+				EM.Defer().AddTag<FMassStateStopSeparationTag>(NewMassEntityHandle);
+			}
+			
 			bNeedsMassUnitSetup = false;
 			AUnitBase* UnitBase = Cast<AUnitBase>(MyOwner);
 			UnitBase->bIsMassUnit = true;
+			UnitBase->CheckTeamVisibility();
 			UnitBase->UpdatePredictionFragment(UnitBase->GetMassActorLocation(), 0);
 			UnitBase->SyncTranslation();
+			
+			// Client: Clear stale cache for any NetID this actor might have had previously 
+			// or might be about to receive. Better yet, the ClientReplicationProcessor 
+			// handles the actual NetID assignment from registry.
+			
 			// Server: assign NetID and update authoritative registry so clients can reconcile
-   if (UWorld* WorldPtr = GetWorld())
+			if (UWorld* WorldPtr = GetWorld())
 			{
 				if (WorldPtr->GetNetMode() != NM_Client)
 				{
 					if (FMassNetworkIDFragment* NetFrag = EM.GetFragmentDataPtr<FMassNetworkIDFragment>(NewMassEntityHandle))
 					{
-						// Skip registration if the owning unit is dead
-						AUnitBase* UnitBaseLocal2 = Cast<AUnitBase>(MyOwner);
-						if (UnitBaseLocal2 && UnitBaseLocal2->UnitState == UnitData::Dead)
-						{
-							// Do not assign NetID or add to registry for dead units
-						}
-						else if (AUnitRegistryReplicator* Reg = AUnitRegistryReplicator::GetOrSpawn(*WorldPtr))
-						{
-							const uint32 NewID = Reg->GetNextNetID();
-							NetFrag->NetID = FMassNetworkID(NewID);
-							const FName OwnerName = MyOwner ? MyOwner->GetFName() : NAME_None;
-							const int32 UnitIndex = (Cast<AUnitBase>(MyOwner)) ? Cast<AUnitBase>(MyOwner)->UnitIndex : INDEX_NONE;
-							FUnitRegistryItem* Existing = nullptr;
-							if (UnitIndex != INDEX_NONE)
+							// Skip registration if the owning unit is dead
+							AUnitBase* UnitBaseLocal2 = Cast<AUnitBase>(MyOwner);
+							if (UnitBaseLocal2 && UnitBaseLocal2->UnitState == UnitData::Dead)
 							{
-								Existing = Reg->Registry.FindByUnitIndex(UnitIndex);
+								// Do not assign NetID or add to registry for dead units
 							}
-							if (!Existing)
+							else if (AUnitRegistryReplicator* Reg = AUnitRegistryReplicator::GetOrSpawn(*WorldPtr))
 							{
-								Existing = Reg->Registry.FindByOwner(OwnerName);
-							}
-							if (Existing)
-							{
-								Existing->OwnerName = OwnerName;
-								Existing->UnitIndex = UnitIndex;
+								// Ensure the unit has a valid unique UnitIndex before entering the registry.
+								int32 UnitIndex = UnitBaseLocal2 ? UnitBaseLocal2->UnitIndex : INDEX_NONE;
+								if (UnitBaseLocal2 && UnitIndex <= 0)
+								{
+									if (ARTSGameModeBase* GM = WorldPtr->GetAuthGameMode<ARTSGameModeBase>())
+									{
+										GM->AddUnitIndexAndAssignToAllUnitsArrayWithIndex(UnitBaseLocal2, INDEX_NONE, FUnitSpawnParameter());
+										UnitIndex = UnitBaseLocal2->UnitIndex;
+									}
+								}
+								if (UnitIndex <= 0)
+								{
+									// Cannot safely register without a stable UnitIndex.
+									// (Should not happen in normal flow; runtime-spawn paths must assign UnitIndex.)
+									return NewMassEntityHandle;
+								}
+
+								const uint32 NewID = Reg->GetNextNetID();
+								NetFrag->NetID = FMassNetworkID(NewID);
+								const FName OwnerName = MyOwner ? MyOwner->GetFName() : NAME_None;
+								FUnitRegistryItem* Existing = Reg->Registry.FindByUnitIndex(UnitIndex);
+							
+								if (Existing)
+								{
+									Existing->OwnerName = OwnerName;
+									Existing->UnitIndex = UnitIndex;
 								Existing->NetID = NetFrag->NetID;
 								Reg->Registry.MarkItemDirty(*Existing);
 							}
@@ -231,9 +324,9 @@ FMassEntityHandle UMassActorBindingComponent::CreateAndLinkOwnerToMassEntity()
 								Reg->Registry.Items[NewIdx2].NetID = NetFrag->NetID;
 								Reg->Registry.MarkItemDirty(Reg->Registry.Items[NewIdx2]);
 							}
-							Reg->Registry.MarkArrayDirty();
-							Reg->ForceNetUpdate();
-						}
+								Reg->Registry.MarkArrayDirty();
+								Reg->ForceNetUpdate();
+							}
 					}
 				}
 			}
@@ -315,6 +408,9 @@ bool UMassActorBindingComponent::BuildArchetypeAndSharedValues(FMassArchetypeHan
 	
 	if(UnitBase->AddGameplayEffectFragement)
 		FragmentsAndTags.Add(FMassGameplayEffectFragment::StaticStruct());
+
+	if (StopSeparation)
+		FragmentsAndTags.Add(FMassStateStopSeparationTag::StaticStruct());
 	
     FMassArchetypeCreationParams Params;
 	Params.ChunkMemorySize=0;
@@ -329,7 +425,7 @@ bool UMassActorBindingComponent::BuildArchetypeAndSharedValues(FMassArchetypeHan
 	
 	FMassMovementParameters MovementParamsInstance;
 	MovementParamsInstance.MaxSpeed = 10000.0f; //MyUnit->Attributes->GetRunSpeed()*20; //500.0f;     // Set desired value
-	MovementParamsInstance.MaxAcceleration = 4000.0f; // Set desired value
+	MovementParamsInstance.MaxAcceleration = MaxAcceleration; // Set desired value
 	MovementParamsInstance.DefaultDesiredSpeed = MyUnit->Attributes->GetRunSpeed(); //400.0f; // Example: Default speed slightly less than max
 	MovementParamsInstance.DefaultDesiredSpeedVariance = 0.00f; // Example: +/- 5% variance is 0.05
 	MovementParamsInstance.HeightSmoothingTime = 0.0f; // 0.2f 
@@ -494,7 +590,7 @@ void UMassActorBindingComponent::InitMovementFragments(FMassEntityManager& Entit
 
 	if (Unit)
 	{
-		MT.SlackRadius = Unit->StopRunTolerance;
+		MT.SlackRadius = Unit->MovementAcceptanceRadius;
 	}
     MT.DistanceToGoal = 0.f;
     MT.DesiredSpeed.Set(0.f);
@@ -616,6 +712,7 @@ FMassEntityHandle UMassActorBindingComponent::CreateAndLinkBuildingToMassEntity(
 		{
 			
 			MassEntityHandle = NewMassEntityHandle;
+			ApplyInitialStartupFreeze(MyOwner, EM, NewMassEntityHandle);
 			InitTransform(EM, NewMassEntityHandle);
 
 			if (AUnitBase* Unit = Cast<AUnitBase>(MyOwner))
@@ -624,10 +721,18 @@ FMassEntityHandle UMassActorBindingComponent::CreateAndLinkBuildingToMassEntity(
 			
 			InitAIFragments(EM, NewMassEntityHandle);
 			InitRepresentation(EM, NewMassEntityHandle);
-			bNeedsMassBuildingSetup = false;
-			AUnitBase* UnitBase = Cast<AUnitBase>(MyOwner);
-			UnitBase->bIsMassUnit = true;
 
+			if (StopSeparation)
+			{
+				EM.Defer().AddTag<FMassStateStopSeparationTag>(NewMassEntityHandle);
+			}
+			
+			bNeedsMassBuildingSetup = false;
+			if (AUnitBase* UnitBase = Cast<AUnitBase>(MyOwner))
+			{
+				UnitBase->bIsMassUnit = true;
+				UnitBase->CheckTeamVisibility();
+			}
 			// Server: assign NetID and update authoritative registry for buildings as well
 			if (UWorld* WorldPtr = GetWorld())
 			{
@@ -640,19 +745,27 @@ FMassEntityHandle UMassActorBindingComponent::CreateAndLinkBuildingToMassEntity(
 						{
 							if (AUnitRegistryReplicator* Reg = AUnitRegistryReplicator::GetOrSpawn(*WorldPtr))
 							{
+								// Ensure stable UnitIndex before entering registry
+								int32 UnitIdxVal = UnitBaseLocal->UnitIndex;
+								if (UnitIdxVal <= 0)
+								{
+									if (ARTSGameModeBase* GM = WorldPtr->GetAuthGameMode<ARTSGameModeBase>())
+									{
+										GM->AddUnitIndexAndAssignToAllUnitsArrayWithIndex(UnitBaseLocal, INDEX_NONE, FUnitSpawnParameter());
+										UnitIdxVal = UnitBaseLocal->UnitIndex;
+									}
+								}
+								if (UnitIdxVal <= 0)
+								{
+									return NewMassEntityHandle;
+								}
+
 								const uint32 NewID = Reg->GetNextNetID();
 								NetFrag->NetID = FMassNetworkID(NewID);
 								const FName OwnerName = MyOwner ? MyOwner->GetFName() : NAME_None;
-								const int32 UnitIdxVal = UnitBaseLocal ? UnitBaseLocal->UnitIndex : INDEX_NONE;
 								FUnitRegistryItem* Existing = nullptr;
-								if (UnitIdxVal != INDEX_NONE)
-								{
-									Existing = Reg->Registry.FindByUnitIndex(UnitIdxVal);
-								}
-								if (!Existing)
-								{
-									Existing = Reg->Registry.FindByOwner(OwnerName);
-								}
+								Existing = Reg->Registry.FindByUnitIndex(UnitIdxVal);
+								
 								if (Existing)
 								{
 									Existing->OwnerName = OwnerName;
@@ -892,6 +1005,7 @@ void UMassActorBindingComponent::InitializeMassEntityStatsFromOwner(FMassEntityM
         	CombatStatsFrag->IsAttackedDuration = IsAttackedDuration;
         	CombatStatsFrag->CastTime = UnitOwner->CastTime;
         	CombatStatsFrag->IsInitialized = UnitOwner->IsInitialized;
+        	CombatStatsFrag->MinRange = MinRange;
             //CalculatedAgentRadius = CombatStatsFrag->AgentRadius; // Use the value from stats
         }
         else // Use default values
@@ -922,6 +1036,27 @@ void UMassActorBindingComponent::InitializeMassEntityStatsFromOwner(FMassEntityM
         	CharFrag->PositionedTransform = UnitOwner->GetActorTransform();
         	CharFrag->CapsuleHeight = UnitOwner->GetCapsuleComponent()->GetScaledCapsuleHalfHeight();
         	CharFrag->CapsuleRadius = UnitOwner->GetCapsuleComponent()->GetScaledCapsuleRadius()+AdditionalCapsuleRadius;
+        	CharFrag->VerticalDeathRotationMultiplier = VerticalDeathRotationMultiplier;
+        	CharFrag->GroundAlignment = GroundAlignment;
+
+            // Perform LineTrace to find the ground height at startup
+            FHitResult Hit;
+            FCollisionQueryParams Params;
+            Params.AddIgnoredActor(UnitOwner);
+            FCollisionObjectQueryParams ObjectParams(ECC_WorldStatic);
+
+            FVector ActorLoc = UnitOwner->GetActorLocation();
+            FVector TraceStart = ActorLoc + FVector(0.f, 0.f, 500.f);
+            FVector TraceEnd = ActorLoc - FVector(0.f, 0.f, 2500.f);
+
+            if (UnitOwner->GetWorld()->LineTraceSingleByObjectType(Hit, TraceStart, TraceEnd, ObjectParams, Params))
+            {
+                CharFrag->LastGroundLocation = Hit.ImpactPoint.Z;
+            }
+            else
+            {
+                CharFrag->LastGroundLocation = ActorLoc.Z; // Fallback to current Z
+            }
         }
         else // Use default values
         {
@@ -1008,13 +1143,13 @@ void UMassActorBindingComponent::InitializeMassEntityStatsFromOwner(FMassEntityM
     // (Moved here as it depends on CombatStats)
     if(FAgentRadiusFragment* RadiusFrag = EntityManager.GetFragmentDataPtr<FAgentRadiusFragment>(EntityHandle))
     {
-       RadiusFrag->Radius = UnitOwner->GetCapsuleComponent()->GetUnscaledCapsuleRadius();
+       RadiusFrag->Radius = UnitOwner->GetCapsuleComponent()->GetUnscaledCapsuleRadius() + AdditionalCapsuleRadius;
     }
 
     if(FMassAvoidanceColliderFragment* AvoidanceFrag = EntityManager.GetFragmentDataPtr<FMassAvoidanceColliderFragment>(EntityHandle))
     {
        // Make sure collider type matches expectations (Circle assumed here)
-       *AvoidanceFrag = FMassAvoidanceColliderFragment(FMassCircleCollider(UnitOwner->GetCapsuleComponent()->GetScaledCapsuleRadius()));
+       *AvoidanceFrag = FMassAvoidanceColliderFragment(FMassCircleCollider(UnitOwner->GetCapsuleComponent()->GetScaledCapsuleRadius() + AdditionalCapsuleRadius));
     }
 
 	if(FMassAITargetFragment* TargetFrag = EntityManager.GetFragmentDataPtr<FMassAITargetFragment>(EntityHandle))
@@ -1112,13 +1247,29 @@ void UMassActorBindingComponent::RequestClientMassUnlink()
 	{
 		return;
 	}
-	// Prevent client-authoritative unlink to avoid desync; server drives destruction
-	if (World->GetNetMode() == NM_Client)
+	
+	// Server-authoritative: server drives destruction via CleanupMassEntity
+	if (World->GetNetMode() != NM_Client)
 	{
+		CleanupMassEntity();
 		return;
 	}
-	// On server, fall back to proper cleanup
-	CleanupMassEntity();
+
+	// On clients, we allow forced unlinking (and entity destruction) if requested by reconciliation.
+	// This ensures that 'ghost' entities are cleaned up even if the actor persists.
+	if (MassEntityHandle.IsValid())
+	{
+		if (!MassEntitySubsystemCache)
+		{
+			MassEntitySubsystemCache = World->GetSubsystem<UMassEntitySubsystem>();
+		}
+		if (MassEntitySubsystemCache)
+		{
+			FMassEntityManager& EM = MassEntitySubsystemCache->GetMutableEntityManager();
+			EM.Defer().DestroyEntity(MassEntityHandle);
+		}
+		MassEntityHandle.Reset();
+	}
 }
 
 void UMassActorBindingComponent::CleanupMassEntity()
@@ -1136,6 +1287,15 @@ void UMassActorBindingComponent::CleanupMassEntity()
 			{
 				if (UnitBase->UnitIndex != INDEX_NONE)
 				{
+					// Resolve NetID if possible to quarantine it
+					if (MassEntityHandle.IsValid())
+					{
+						if (const FMassNetworkIDFragment* NetIDFrag = MassEntitySubsystemCache->GetEntityManager().GetFragmentDataPtr<FMassNetworkIDFragment>(MassEntityHandle))
+						{
+							Reg->QuarantineNetID(NetIDFrag->NetID.GetValue());
+						}
+					}
+					
 					bRemoved |= Reg->Registry.RemoveByUnitIndex(UnitBase->UnitIndex);
 				}
 				bRemoved |= Reg->Registry.RemoveByOwner(Owner ? Owner->GetFName() : NAME_None);

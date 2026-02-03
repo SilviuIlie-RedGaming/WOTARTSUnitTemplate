@@ -60,6 +60,7 @@ public:
 	UPROPERTY(EditDefaultsOnly, Category = "Input")
 	UInputConfig* InputConfig;
 
+	UPROPERTY(Replicated, BlueprintReadWrite, Category = RTSUnitTemplate)
 	bool BlockControls = true;
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadWrite, Category = RTSUnitTemplate)
@@ -319,6 +320,9 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = RTSUnitTemplate)
 	float MovePositionCamSpeed = 1.0f;
 	// Control Widget
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = RTSUnitTemplate)
+	bool SwapScroll = false;
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadWrite, Category = RTSUnitTemplate)
 	UUserWidget* ControlWidget;

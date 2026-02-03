@@ -79,21 +79,34 @@ void UMapSwitchWidget::OnYesClicked()
     ACameraControllerBase* PC = Cast<ACameraControllerBase>(GetOwningPlayer());
     if (PC)
     {
+        if (OwningActor)
+        {
+            OwningActor->StartMapSwitch();
+        }
+        
         // Call the RPC on the player controller, which is owned by the client
         FName Tag = OwningActor ? OwningActor->GetDestinationSwitchTagToEnable() : NAME_None;
         PC->Server_TravelToMap(TargetMapName, Tag);
     }
 
-    // The widget can be closed immediately.
-    RemoveFromParent();
+    if (OwningActor)
+    {
+        OwningActor->CloseWidget();
+    }
 }
 
 void UMapSwitchWidget::OnNoClicked()
 {
-    RemoveFromParent();
+    if (OwningActor)
+    {
+        OwningActor->CloseWidget();
+    }
 }
 
 void UMapSwitchWidget::OnOkClicked()
 {
-    RemoveFromParent();
+    if (OwningActor)
+    {
+        OwningActor->CloseWidget();
+    }
 }

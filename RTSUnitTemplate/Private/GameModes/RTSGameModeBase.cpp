@@ -36,25 +36,21 @@
 #include "Engine/Engine.h"
 #include "Mass/Signals/MySignals.h"
 #include "Mass/States/ChaseStateProcessor.h"
+#include "System/MapSwitchSubsystem.h"
+#include "Engine/GameInstance.h"
 
 
 void ARTSGameModeBase::BeginPlay()
 {
 	Super::BeginPlay();
 
+	TagsDestroyedCountMap.Empty();
+	TagsAliveCountMap.Empty();
+	TeamTagsDestroyedCountMap.Empty();
+	TeamTagsAliveCountMap.Empty();
 	bWinLoseTriggered = false;
 
 	FillUnitArrays();
-
-	// Find the first WinLoseConfigActor in the world
-	for (TActorIterator<AWinLoseConfigActor> It(GetWorld()); It; ++It)
-	{
-		WinLoseConfigActor = *It;
-		if (WinLoseConfigActor)
-		{
-			break;
-		}
-	}
 
 	FTimerHandle TimerHandleGatherController;
 	GetWorldTimerManager().SetTimer(TimerHandleGatherController, this, &ARTSGameModeBase::SetTeamIdsAndWaypoints, GatherControllerTimer, false);
@@ -93,50 +89,274 @@ void ARTSGameModeBase::BeginPlay()
 
 	FTimerHandle TimerHandleStartDataTable;
 	GetWorldTimerManager().SetTimer(TimerHandleStartDataTable, this, &ARTSGameModeBase::DataTableTimerStart, GatherControllerTimer + DelaySpawnTableTime, false);
-	
+
+	GetWorldTimerManager().SetTimer(WinLoseTimerHandle, this, &ARTSGameModeBase::CheckWinLoseConditionTimer, 1.0f, true);
 }
 
-#include "System/MapSwitchSubsystem.h"
-#include "Engine/GameInstance.h"
+void ARTSGameModeBase::InitializeWinLoseConfigActors()
+{
+	// Find all WinLoseConfigActors in the world
+	WinLoseConfigActors.Empty();
+	for (TActorIterator<AWinLoseConfigActor> It(GetWorld()); It; ++It)
+	{
+		AWinLoseConfigActor* Config = *It;
+		if (Config)
+		{
+			WinLoseConfigActors.Add(Config);
+			if (!WinLoseConfigActor)
+			{
+				WinLoseConfigActor = Config;
+			}
+		}
+	}
+}
+
+void ARTSGameModeBase::CheckWinLoseConditionTimer()
+{
+	CheckWinLoseCondition(nullptr);
+}
 
 void ARTSGameModeBase::DataTableTimerStart()
 {
 	if(!DisableSpawn)SetupTimerFromDataTable_Implementation(FVector(0.f), nullptr);
+	bInitialSpawnFinished = true;
 }
 
-void ARTSGameModeBase::CheckWinLoseCondition(AUnitBase* DestroyedUnit)
+void ARTSGameModeBase::TriggerWinLoseForPlayer(ACameraControllerBase* PC, bool bWon, AWinLoseConfigActor* Config)
 {
-	if (GetWorld()->GetTimeSeconds() < (float)GatherControllerTimer + 5.f) return;
-	if (bWinLoseTriggered) return;
-	if (!WinLoseConfigActor || WinLoseConfigActor->WinLoseCondition == EWinLoseCondition::None) return;
+	if (!PC || !Config) return;
 
-	TArray<ABuildingBase*> AllBuildings;
-	if (WinLoseConfigActor->WinLoseCondition == EWinLoseCondition::AllBuildingsDestroyed)
-	{
-		for (TActorIterator<ABuildingBase> It(GetWorld()); It; ++It)
-		{
-			ABuildingBase* Building = *It;
-			if (Building && Building != DestroyedUnit && Building->GetUnitState() != UnitData::Dead)
-			{
-				AllBuildings.Add(Building);
-			}
-		}
-	}
-
-	FString TargetMapName = WinLoseConfigActor->WinLoseTargetMapName.ToSoftObjectPath().GetLongPackageName();
+	FString TargetMapName = Config->WinLoseTargetMapName.ToSoftObjectPath().GetLongPackageName();
 	if (UGameInstance* GI = GetGameInstance())
 	{
 		if (UMapSwitchSubsystem* MapSwitchSub = GI->GetSubsystem<UMapSwitchSubsystem>())
 		{
-			if (WinLoseConfigActor->DestinationSwitchTagToEnable != NAME_None && !TargetMapName.IsEmpty())
+			if (Config->DestinationSwitchTagToEnable != NAME_None && !TargetMapName.IsEmpty())
 			{
-				MapSwitchSub->MarkSwitchEnabledForMap(TargetMapName, WinLoseConfigActor->DestinationSwitchTagToEnable);
+				MapSwitchSub->MarkSwitchEnabledForMap(TargetMapName, Config->DestinationSwitchTagToEnable);
 			}
 		}
 	}
 
+	TWeakObjectPtr<ACameraControllerBase> WeakPC = PC;
+	TSubclassOf<UWinLoseWidget> WidgetClass = Config->WinLoseWidgetClass;
+	FName Tag = Config->DestinationSwitchTagToEnable;
+
+	GetWorldTimerManager().SetTimer(PC->WinLoseTimerHandle, [WeakPC, bWon, WidgetClass, TargetMapName, Tag]()
+	{
+		if (ACameraControllerBase* StrongPC = WeakPC.Get())
+		{
+			StrongPC->Client_TriggerWinLoseUI(bWon, WidgetClass, TargetMapName, Tag);
+		}
+	}, bWon ? Config->WinDelay : Config->LoseDelay, false);
+}
+
+bool ARTSGameModeBase::IsAnyUnitWithTagAlive(const FGameplayTag& Tag, const TMap<FGameplayTag, int32>& AliveTagCounts) const
+{
+	return Tag.IsValid() && AliveTagCounts.Contains(Tag) && AliveTagCounts[Tag] > 0;
+}
+
+void ARTSGameModeBase::UpdateTagProgressForConfig(AWinLoseConfigActor* Config)
+{
+	if (!Config) return;
+
+	FWinConditionData CurrentWinData = Config->GetCurrentWinConditionData();
+	if (CurrentWinData.Condition == EWinLoseCondition::TaggedUnitsDestroyed || CurrentWinData.Condition == EWinLoseCondition::TaggedUnitsSpawned)
+	{
+		TArray<FTagProgress> NewTagProgress;
+		const FGameplayTagContainer& TargetTags = CurrentWinData.WinLoseTargetTags.Num() > 0 ? CurrentWinData.WinLoseTargetTags : Config->WinLoseTargetTags;
+
+		// Use a set to collect all tags we should track progress for
+		TSet<FGameplayTag> AllTagsToTrack;
+		for (auto TagIt = TargetTags.CreateConstIterator(); TagIt; ++TagIt)
+		{
+			AllTagsToTrack.Add(*TagIt);
+		}
+		for (const FGameplayTagCount& TagCount : CurrentWinData.TargetTagCounts)
+		{
+			AllTagsToTrack.Add(TagCount.Tag);
+		}
+
+		for (const FGameplayTag& TargetTag : AllTagsToTrack)
+		{
+			int32 AliveCount = 0;
+			int32 DestroyedCount = 0;
+
+			if (Config->TeamId != 0)
+			{
+				if (CurrentWinData.Condition == EWinLoseCondition::TaggedUnitsDestroyed)
+				{
+					for (auto& Pair : TeamTagsAliveCountMap)
+					{
+						if (Pair.Key != Config->TeamId)
+						{
+							AliveCount += Pair.Value.TagCounts.Contains(TargetTag) ? Pair.Value.TagCounts[TargetTag] : 0;
+						}
+					}
+					for (auto& Pair : TeamTagsDestroyedCountMap)
+					{
+						if (Pair.Key != Config->TeamId)
+						{
+							DestroyedCount += Pair.Value.TagCounts.Contains(TargetTag) ? Pair.Value.TagCounts[TargetTag] : 0;
+						}
+					}
+				}
+				else // TaggedUnitsSpawned or other
+				{
+					if (TeamTagsAliveCountMap.Contains(Config->TeamId))
+					{
+						AliveCount = TeamTagsAliveCountMap[Config->TeamId].TagCounts.Contains(TargetTag) ? TeamTagsAliveCountMap[Config->TeamId].TagCounts[TargetTag] : 0;
+					}
+					if (TeamTagsDestroyedCountMap.Contains(Config->TeamId))
+					{
+						DestroyedCount = TeamTagsDestroyedCountMap[Config->TeamId].TagCounts.Contains(TargetTag) ? TeamTagsDestroyedCountMap[Config->TeamId].TagCounts[TargetTag] : 0;
+					}
+				}
+			}
+			else
+			{
+				AliveCount = TagsAliveCountMap.Contains(TargetTag) ? TagsAliveCountMap[TargetTag] : 0;
+				DestroyedCount = TagsDestroyedCountMap.Contains(TargetTag) ? TagsDestroyedCountMap[TargetTag] : 0;
+			}
+
+			int32 TotalCount = AliveCount + DestroyedCount;
+
+			FTagProgress Progress;
+			Progress.Tag = TargetTag;
+			Progress.AliveCount = AliveCount;
+			Progress.TotalCount = TotalCount;
+
+			// Determine TargetCount
+			int32 TargetCount = 0;
+			for (const FGameplayTagCount& TagCount : CurrentWinData.TargetTagCounts)
+			{
+				if (TagCount.Tag == TargetTag)
+				{
+					TargetCount = TagCount.Count;
+					break;
+				}
+			}
+			
+			// Fallback to 1 if it's in the container but not in the count array
+			if (TargetCount == 0 && TargetTags.HasTagExact(TargetTag))
+			{
+				TargetCount = 1;
+			}
+
+			Progress.TargetCount = TargetCount;
+			NewTagProgress.Add(Progress);
+		}
+		Config->TagProgress = NewTagProgress;
+	}
+}
+
+float ARTSGameModeBase::GetResource(int32 TeamId, EResourceType ResourceType) const
+{
+	return 0.f;
+}
+
+void ARTSGameModeBase::CheckWinLoseCondition(AUnitBase* DestroyedUnit)
+{
+	if (DestroyedUnit && bInitialSpawnFinished)
+	{
+		for (auto TagIt = DestroyedUnit->UnitTags.CreateConstIterator(); TagIt; ++TagIt)
+		{
+			TagsDestroyedCountMap.FindOrAdd(*TagIt)++;
+			TeamTagsDestroyedCountMap.FindOrAdd(DestroyedUnit->TeamId).TagCounts.FindOrAdd(*TagIt)++;
+		}
+	}
+
+	if (bWinLoseTriggered) return;
+	if (WinLoseConfigActors.Num() == 0) return;
+
+	TArray<ABuildingBase*> AllBuildings;
+	TagsAliveCountMap.Empty();
+	TeamTagsAliveCountMap.Empty();
+	bool bNeedBuildings = false;
+	bool bNeedTags = false;
+
+	for (AWinLoseConfigActor* Config : WinLoseConfigActors)
+	{
+		EWinLoseCondition CurrentWinCondition = Config->GetCurrentWinCondition();
+		if (CurrentWinCondition == EWinLoseCondition::AllBuildingsDestroyed || 
+			Config->LoseCondition == EWinLoseCondition::AllBuildingsDestroyed)
+		{
+			bNeedBuildings = true;
+		}
+		
+		if (CurrentWinCondition == EWinLoseCondition::TaggedUnitsDestroyed ||
+			CurrentWinCondition == EWinLoseCondition::TaggedUnitsSpawned ||
+			Config->LoseCondition == EWinLoseCondition::TaggedUnitsDestroyed || 
+			Config->LoseCondition == EWinLoseCondition::TaggedUnitsSpawned ||
+			Config->WinLoseTargetTags.Num() > 0)
+		{
+			bNeedTags = true;
+		}
+
+		for (const FWinConditionData& ConditionData : Config->WinConditions)
+		{
+			if (ConditionData.Condition == EWinLoseCondition::TaggedUnitsDestroyed || 
+				ConditionData.Condition == EWinLoseCondition::TaggedUnitsSpawned ||
+				ConditionData.WinLoseTargetTags.Num() > 0 ||
+				ConditionData.TargetTagCounts.Num() > 0)
+			{
+				bNeedTags = true;
+				break;
+			}
+		}
+	}
+
+	if (bNeedBuildings || bNeedTags)
+	{
+		for (TActorIterator<ASpawnerUnit> It(GetWorld()); It; ++It)
+		{
+			ASpawnerUnit* Spawner = *It;
+			if (Spawner && Spawner != DestroyedUnit)
+			{
+				// Check if it's dead (if it has a state)
+				if (AAbilityUnit* AbilityUnit = Cast<AAbilityUnit>(Spawner))
+				{
+					if (AbilityUnit->GetUnitState() == UnitData::Dead)
+					{
+						continue;
+					}
+				}
+
+				if (ABuildingBase* Building = Cast<ABuildingBase>(Spawner))
+				{
+					AllBuildings.Add(Building);
+				}
+				
+				for (auto TagIt = Spawner->UnitTags.CreateConstIterator(); TagIt; ++TagIt)
+				{
+					TagsAliveCountMap.FindOrAdd(*TagIt)++;
+					TeamTagsAliveCountMap.FindOrAdd(Spawner->TeamId).TagCounts.FindOrAdd(*TagIt)++;
+				}
+			}
+		}
+
+		if (bNeedBuildings)
+		{
+			if (!bBuildingsEverExisted && AllBuildings.Num() > 0)
+			{
+				bBuildingsEverExisted = true;
+			}
+		}
+	}
+
+	// Update TagProgress for ALL configs so UI is correct even during delay
+	for (AWinLoseConfigActor* Config : WinLoseConfigActors)
+	{
+		UpdateTagProgressForConfig(Config);
+	}
+
+	if (!bInitialSpawnFinished) return;
+	if (GetWorld()->GetTimeSeconds() < (float)GatherControllerTimer + 10.f + DelaySpawnTableTime) return;
+
 	bool bAnyWon = false;
 	bool bAnyLost = false;
+	TArray<int32> LosingTeams;
+	TSet<AWinLoseConfigActor*> AdvancedConfigs;
 
 	for (FConstControllerIterator It = GetWorld()->GetControllerIterator(); It; ++It)
 	{
@@ -144,83 +364,288 @@ void ARTSGameModeBase::CheckWinLoseCondition(AUnitBase* DestroyedUnit)
 		if (!PC) continue;
 
 		int32 PlayerTeamId = PC->SelectableTeamId;
-		bool bLocalTriggered = false;
-		bool bWon = false;
 
-		if (WinLoseConfigActor->WinLoseCondition == EWinLoseCondition::AllBuildingsDestroyed)
+		for (AWinLoseConfigActor* Config : WinLoseConfigActors)
 		{
-			bool bFriendlyBuildingsExist = false;
-			bool bEnemyBuildingsExist = false;
+			if (AdvancedConfigs.Contains(Config)) continue;
+			if (Config->TeamId != 0 && Config->TeamId != PlayerTeamId) continue;
 
-			for (ABuildingBase* Building : AllBuildings)
+			bool bLocalTriggered = false;
+			bool bWon = false;
+
+			// 1. Check Win Condition
+			bool bAdvancedInLoop = true;
+			while (bAdvancedInLoop)
 			{
-				if (Building->TeamId == PlayerTeamId)
+				bAdvancedInLoop = false;
+				FWinConditionData CurrentWinData = Config->GetCurrentWinConditionData();
+				EWinLoseCondition CurrentWinCondition = CurrentWinData.Condition;
+
+				bool bStepMet = false;
+				bool bStepWon = false;
+
+				if (CurrentWinCondition == EWinLoseCondition::AllBuildingsDestroyed)
 				{
-					bFriendlyBuildingsExist = true;
+					bool bFriendlyBuildingsExist = false;
+					bool bEnemyBuildingsExist = false;
+
+					for (ABuildingBase* Building : AllBuildings)
+					{
+						if (Building->TeamId == PlayerTeamId) bFriendlyBuildingsExist = true;
+						else bEnemyBuildingsExist = true;
+					}
+
+					if (!bEnemyBuildingsExist && bFriendlyBuildingsExist)
+					{
+						bStepMet = true;
+						bStepWon = true;
+					}
 				}
-				else
+				else if (CurrentWinCondition == EWinLoseCondition::TaggedUnitsDestroyed)
 				{
-					bEnemyBuildingsExist = true;
+					bool bAllTagsMet = true;
+					bool bLastDestroyedWasFriendly = false;
+
+					const FGameplayTagContainer& TargetTags = CurrentWinData.WinLoseTargetTags.Num() > 0 ? CurrentWinData.WinLoseTargetTags : Config->WinLoseTargetTags;
+					if (TargetTags.Num() == 0 || Config->TagProgress.Num() == 0) bAllTagsMet = false;
+
+					for (const FTagProgress& Progress : Config->TagProgress)
+					{
+						if (Progress.TotalCount > 0 && Progress.AliveCount == 0)
+						{
+							if (DestroyedUnit && DestroyedUnit->UnitTags.HasTagExact(Progress.Tag) && DestroyedUnit->TeamId == PlayerTeamId)
+							{
+								bLastDestroyedWasFriendly = true;
+							}
+						}
+						else
+						{
+							bAllTagsMet = false;
+						}
+					}
+
+					if (bAllTagsMet)
+					{
+						bStepMet = true;
+						bStepWon = !bLastDestroyedWasFriendly;
+					}
+				}
+				else if (CurrentWinCondition == EWinLoseCondition::TaggedUnitsSpawned)
+				{
+					bool bAllTagsMet = true;
+					if (Config->TagProgress.Num() == 0) bAllTagsMet = false;
+
+					for (const FTagProgress& Progress : Config->TagProgress)
+					{
+						if (Progress.TotalCount < Progress.TargetCount)
+						{
+							bAllTagsMet = false;
+							break;
+						}
+					}
+
+					if (bAllTagsMet)
+					{
+						bStepMet = true;
+						bStepWon = true;
+					}
+				}
+				else if (CurrentWinCondition == EWinLoseCondition::TeamReachedGameTime)
+				{
+					float CurrentTime = GetWorld()->GetTimeSeconds();
+					if (AResourceGameState* GS = GetGameState<AResourceGameState>())
+					{
+						if (GS->MatchStartTime > 0)
+						{
+							CurrentTime = GS->GetServerWorldTimeSeconds() - GS->MatchStartTime;
+						}
+					}
+
+					if (CurrentTime >= CurrentWinData.TargetGameTime)
+					{
+						bStepMet = true;
+						bStepWon = (PlayerTeamId == Config->TeamId || Config->TeamId == 0);
+					}
+				}
+				else if (CurrentWinCondition == EWinLoseCondition::TeamReachedResourceCount)
+				{
+					const FBuildingCost& Target = CurrentWinData.TargetResourceCount;
+					if ((Target.PrimaryCost <= 0 || GetResource(PlayerTeamId, EResourceType::Primary) >= Target.PrimaryCost) &&
+						(Target.SecondaryCost <= 0 || GetResource(PlayerTeamId, EResourceType::Secondary) >= Target.SecondaryCost) &&
+						(Target.TertiaryCost <= 0 || GetResource(PlayerTeamId, EResourceType::Tertiary) >= Target.TertiaryCost) &&
+						(Target.RareCost <= 0 || GetResource(PlayerTeamId, EResourceType::Rare) >= Target.RareCost) &&
+						(Target.EpicCost <= 0 || GetResource(PlayerTeamId, EResourceType::Epic) >= Target.EpicCost) &&
+						(Target.LegendaryCost <= 0 || GetResource(PlayerTeamId, EResourceType::Legendary) >= Target.LegendaryCost))
+					{
+						bStepMet = true;
+						bStepWon = true;
+					}
+				}
+
+				if (bStepMet && bStepWon)
+				{
+					if (!Config->IsLastWinCondition())
+					{
+						Config->AdvanceToNextWinCondition();
+						AdvancedConfigs.Add(Config);
+						UpdateTagProgressForConfig(Config); // Refresh data for the next step immediately
+						bAdvancedInLoop = true;
+					}
+					else
+					{
+						bLocalTriggered = true;
+						bWon = true;
+						break;
+					}
 				}
 			}
 
-			if (!bFriendlyBuildingsExist)
+			// 2. Check Lose Condition (if Win Condition didn't trigger)
+			if (!bLocalTriggered && Config->LoseCondition != EWinLoseCondition::None)
 			{
-				bLocalTriggered = true;
-				bWon = false;
-			}
-			else if (!bEnemyBuildingsExist)
-			{
-				bLocalTriggered = true;
-				bWon = true;
-			}
-		}
-		else if (WinLoseConfigActor->WinLoseCondition == EWinLoseCondition::TaggedUnitDestroyed)
-		{
-			if (DestroyedUnit && DestroyedUnit->UnitTags.HasTagExact(WinLoseConfigActor->WinLoseTargetTag))
-			{
-				bLocalTriggered = true;
-				if (DestroyedUnit->TeamId == PlayerTeamId)
+				if (Config->LoseCondition == EWinLoseCondition::AllBuildingsDestroyed)
 				{
-					bWon = false;
+					bool bTeamBuildingsExist = false;
+					for (ABuildingBase* Building : AllBuildings)
+					{
+						if (Building->TeamId == PlayerTeamId)
+						{
+							bTeamBuildingsExist = true;
+							break;
+						}
+					}
+
+					if (!bTeamBuildingsExist)
+					{
+						bLocalTriggered = true;
+						bWon = false;
+					}
 				}
-				else
+				else if (Config->LoseCondition == EWinLoseCondition::TaggedUnitsDestroyed)
 				{
-					bWon = true;
+					bool bAllTagsMet = true;
+					if (Config->WinLoseTargetTags.Num() == 0) bAllTagsMet = false;
+
+					for (auto TagIt = Config->WinLoseTargetTags.CreateConstIterator(); TagIt; ++TagIt)
+					{
+						const FGameplayTag& TargetTag = *TagIt;
+						int32 AliveCount = 0;
+						int32 DestroyedCount = 0;
+
+						if (Config->TeamId != 0)
+						{
+							if (TeamTagsAliveCountMap.Contains(Config->TeamId))
+							{
+								AliveCount = TeamTagsAliveCountMap[Config->TeamId].TagCounts.Contains(TargetTag) ? TeamTagsAliveCountMap[Config->TeamId].TagCounts[TargetTag] : 0;
+							}
+							if (TeamTagsDestroyedCountMap.Contains(Config->TeamId))
+							{
+								DestroyedCount = TeamTagsDestroyedCountMap[Config->TeamId].TagCounts.Contains(TargetTag) ? TeamTagsDestroyedCountMap[Config->TeamId].TagCounts[TargetTag] : 0;
+							}
+						}
+						else
+						{
+							AliveCount = TagsAliveCountMap.Contains(TargetTag) ? TagsAliveCountMap[TargetTag] : 0;
+							DestroyedCount = TagsDestroyedCountMap.Contains(TargetTag) ? TagsDestroyedCountMap[TargetTag] : 0;
+						}
+
+						int32 TotalCount = AliveCount + DestroyedCount;
+
+						if (!(TotalCount > 0 && AliveCount == 0))
+						{
+							bAllTagsMet = false;
+							break;
+						}
+					}
+
+					if (bAllTagsMet)
+					{
+						bLocalTriggered = true;
+						bWon = false;
+					}
+				}
+				else if (Config->LoseCondition == EWinLoseCondition::TeamReachedGameTime)
+				{
+					float CurrentTime = GetWorld()->GetTimeSeconds();
+					if (AResourceGameState* GS = GetGameState<AResourceGameState>())
+					{
+						if (GS->MatchStartTime > 0)
+						{
+							CurrentTime = GS->GetServerWorldTimeSeconds() - GS->MatchStartTime;
+						}
+					}
+
+					if (CurrentTime >= Config->TargetGameTime)
+					{
+						if (PlayerTeamId == Config->TeamId || Config->TeamId == 0)
+						{
+							bLocalTriggered = true;
+							bWon = false;
+						}
+					}
+				}
+				else if (Config->LoseCondition == EWinLoseCondition::TeamReachedResourceCount)
+				{
+					const FBuildingCost& Target = Config->TargetResourceCount;
+					if ((Target.PrimaryCost <= 0 || GetResource(PlayerTeamId, EResourceType::Primary) >= Target.PrimaryCost) &&
+						(Target.SecondaryCost <= 0 || GetResource(PlayerTeamId, EResourceType::Secondary) >= Target.SecondaryCost) &&
+						(Target.TertiaryCost <= 0 || GetResource(PlayerTeamId, EResourceType::Tertiary) >= Target.TertiaryCost) &&
+						(Target.RareCost <= 0 || GetResource(PlayerTeamId, EResourceType::Rare) >= Target.RareCost) &&
+						(Target.EpicCost <= 0 || GetResource(PlayerTeamId, EResourceType::Epic) >= Target.EpicCost) &&
+						(Target.LegendaryCost <= 0 || GetResource(PlayerTeamId, EResourceType::Legendary) >= Target.LegendaryCost))
+					{
+						bLocalTriggered = true;
+						bWon = false;
+					}
 				}
 			}
-		}
-		else if (WinLoseConfigActor->WinLoseCondition == EWinLoseCondition::TeamReachedGameTime)
-		{
-			if (GetWorld()->GetTimeSeconds() >= WinLoseConfigActor->TargetGameTime)
+
+			if (bLocalTriggered)
 			{
-				bLocalTriggered = true;
-				bWon = (PlayerTeamId == WinLoseConfigActor->TeamId);
+				bWinLoseTriggered = true;
+				if (bWon) bAnyWon = true; else { bAnyLost = true; LosingTeams.AddUnique(PlayerTeamId); }
+				TriggerWinLoseForPlayer(PC, bWon, Config);
+				break; // Found a trigger for this player
 			}
-		}
-
-		if (bLocalTriggered)
-		{
-			bWinLoseTriggered = true;
-
-			if (bWon) bAnyWon = true; else bAnyLost = true;
-
-			TWeakObjectPtr<ACameraControllerBase> WeakPC = PC;
-			TSubclassOf<UWinLoseWidget> WidgetClass = WinLoseConfigActor->WinLoseWidgetClass;
-			FName Tag = WinLoseConfigActor->DestinationSwitchTagToEnable;
-
-			GetWorldTimerManager().SetTimer(PC->WinLoseTimerHandle, [WeakPC, bWon, WidgetClass, TargetMapName, Tag]()
-			{
-				if (ACameraControllerBase* StrongPC = WeakPC.Get())
-				{
-					StrongPC->Client_TriggerWinLoseUI(bWon, WidgetClass, TargetMapName, Tag);
-				}
-			}, bWon ? WinLoseConfigActor->WinDelay : WinLoseConfigActor->LoseDelay, false);
 		}
 	}
 
-	if (bAnyWon) WinLoseConfigActor->OnYouWonTheGame.Broadcast();
-	if (bAnyLost) WinLoseConfigActor->OnYouLostTheGame.Broadcast();
+	// Last team standing logic
+	if (bAnyLost)
+	{
+		for (AWinLoseConfigActor* Config : WinLoseConfigActors)
+		{
+			if (Config->TeamId == 0) // Global lose condition
+			{
+				TArray<int32> RemainingTeams;
+				for (FConstControllerIterator It = GetWorld()->GetControllerIterator(); It; ++It)
+				{
+					ACameraControllerBase* PC = Cast<ACameraControllerBase>(It->Get());
+					if (PC && PC->SelectableTeamId != 0 && !LosingTeams.Contains(PC->SelectableTeamId))
+					{
+						RemainingTeams.AddUnique(PC->SelectableTeamId);
+					}
+				}
+
+				if (RemainingTeams.Num() == 1)
+				{
+					int32 WinningTeamId = RemainingTeams[0];
+					for (FConstControllerIterator It = GetWorld()->GetControllerIterator(); It; ++It)
+					{
+						ACameraControllerBase* PC = Cast<ACameraControllerBase>(It->Get());
+						if (PC && PC->SelectableTeamId == WinningTeamId && !PC->WinLoseTimerHandle.IsValid())
+						{
+							TriggerWinLoseForPlayer(PC, true, Config);
+							bAnyWon = true;
+						}
+					}
+				}
+			}
+		}
+	}
+
+	if (bAnyWon && WinLoseConfigActor) WinLoseConfigActor->OnYouWonTheGame.Broadcast();
+	if (bAnyLost && WinLoseConfigActor) WinLoseConfigActor->OnYouLostTheGame.Broadcast();
 }
 
 void ARTSGameModeBase::Multicast_TriggerWinLoseUI_Implementation(bool bWon, TSubclassOf<class UWinLoseWidget> InWidgetClass, const FString& InMapName, FName DestinationSwitchTagToEnable)
@@ -627,6 +1052,7 @@ void ARTSGameModeBase::SetTeamIdsAndWaypoints_Implementation()
 		FGameplayTag SpecificCameraUnitTag = FGameplayTag::RequestGameplayTag(SpecificCameraUnitTagName);
 		CameraControllerBase->SetCameraUnitWithTag_Implementation(SpecificCameraUnitTag, CameraControllerBase->SelectableTeamId);
 		CameraControllerBase->Multi_SetCameraOnly();
+		CameraControllerBase->Client_InitializeMainHUD();
 		
 		CameraControllerBase->Multi_HideEnemyWaypoints();
 		CameraControllerBase->Multi_InitFogOfWar();
@@ -731,40 +1157,43 @@ void ARTSGameModeBase::SetTeamIdsAndWaypoints_Implementation()
 		}
 		
 		// Spawn a non-possessing AIController that runs the Behavior Tree as an orchestrator
-	  UClass* OrchestratorClass = AIOrchestratorClass ? *AIOrchestratorClass : ARTSBTController::StaticClass();
+		UClass* OrchestratorClass = AIOrchestratorClass ? *AIOrchestratorClass : (UClass*)ARTSBTController::StaticClass();
 		{
-			FActorSpawnParameters SpawnParams;
-			SpawnParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
-   AActor* OrchestratorActor = GetWorld()->SpawnActor<AActor>(OrchestratorClass, FVector::ZeroVector, FRotator::ZeroRotator, SpawnParams);
-			ARTSBTController* Orchestrator = Cast<ARTSBTController>(OrchestratorActor);
+			FTransform OrchestratorTransform = FTransform::Identity;
+			ARTSBTController* Orchestrator = GetWorld()->SpawnActorDeferred<ARTSBTController>(OrchestratorClass, OrchestratorTransform, nullptr, nullptr, ESpawnActorCollisionHandlingMethod::AlwaysSpawn);
+			
 			if (Orchestrator)
-		{
-			UE_LOG(LogTemp, Log, TEXT("[GM] Spawned ARTSBTController orchestrator: %s (no possession)"), *GetNameSafe(Orchestrator));
-
-			// If the orchestrator doesn't have a BT assigned, but the GameMode provides one, wire it up now
-			if (!Orchestrator->StrategyBehaviorTree && AIBehaviorTree)
 			{
-				Orchestrator->StrategyBehaviorTree = AIBehaviorTree;
-				UBlackboardComponent* OutBB = nullptr;
-				if (Orchestrator->UseBlackboard(AIBehaviorTree->BlackboardAsset, OutBB))
+				// Set the TeamId on the orchestrator BEFORE FinishSpawning (so it's ready in BeginPlay)
+				Orchestrator->OrchestratorTeamId = TeamId;
+				UGameplayStatics::FinishSpawningActor(Orchestrator, OrchestratorTransform);
+
+				UE_LOG(LogTemp, Log, TEXT("[GM] Spawned ARTSBTController orchestrator: %s (no possession) with TeamId=%d"), *GetNameSafe(Orchestrator), TeamId);
+
+				// If the orchestrator doesn't have a BT assigned, but the GameMode provides one, wire it up now
+				if (!Orchestrator->StrategyBehaviorTree && AIBehaviorTree)
 				{
-					const bool bStarted = Orchestrator->RunBehaviorTree(AIBehaviorTree);
-					if (!bStarted)
+					Orchestrator->StrategyBehaviorTree = AIBehaviorTree;
+					UBlackboardComponent* OutBB = nullptr;
+					if (Orchestrator->UseBlackboard(AIBehaviorTree->BlackboardAsset, OutBB))
 					{
-						UE_LOG(LogTemp, Error, TEXT("[GM] RunBehaviorTree failed when starting orchestrator with provided AIBehaviorTree '%s'"), *GetNameSafe(AIBehaviorTree));
+						const bool bStarted = Orchestrator->RunBehaviorTree(AIBehaviorTree);
+						if (!bStarted)
+						{
+							UE_LOG(LogTemp, Error, TEXT("[GM] RunBehaviorTree failed when starting orchestrator with provided AIBehaviorTree '%s'"), *GetNameSafe(AIBehaviorTree));
+						}
+					}
+					else
+					{
+						UE_LOG(LogTemp, Error, TEXT("[GM] UseBlackboard failed for orchestrator. Ensure AIBehaviorTree has a Blackboard asset assigned."));
 					}
 				}
-				else
-				{
-					UE_LOG(LogTemp, Error, TEXT("[GM] UseBlackboard failed for orchestrator. Ensure AIBehaviorTree has a Blackboard asset assigned."));
-				}
+			}
+			else
+			{
+				UE_LOG(LogTemp, Warning, TEXT("[GM] Failed to spawn ARTSBTController orchestrator for Team %d"), TeamId);
 			}
 		}
-		else
-		{
-			UE_LOG(LogTemp, Warning, TEXT("[GM] Failed to spawn ARTSBTController orchestrator for Team %d"), TeamId);
-		}
-	}
 
 		// Apply customizations and set team/waypoint
 		ApplyCustomizationsFromPlayerStart(AIPC, Start);
@@ -791,6 +1220,25 @@ void ARTSGameModeBase::SetTeamIdsAndWaypoints_Implementation()
 	}
 
 	NavInitialisation();
+
+	// Initialize MainHUD
+	/*
+	for (FConstControllerIterator It = GetWorld()->GetControllerIterator(); It; ++It)
+	{
+		if (ACameraControllerBase* PC = Cast<ACameraControllerBase>(It->Get()))
+		{
+			PC->Client_InitializeMainHUD();
+		}
+	}
+	*/
+	InitializeWinLoseConfigActors();
+	for (FConstControllerIterator It = GetWorld()->GetControllerIterator(); It; ++It)
+	{
+		if (ACameraControllerBase* PC = Cast<ACameraControllerBase>(It->Get()))
+		{
+			PC->Client_InitializeWinLoseSystem();
+		}
+	}
 }
 
 void ARTSGameModeBase::SetupTimerFromDataTable_Implementation(FVector Location, AUnitBase* UnitToChase)
@@ -1027,14 +1475,7 @@ AUnitBase* ARTSGameModeBase::SpawnSingleUnit(FUnitSpawnParameter SpawnParameter,
 	const auto UnitBase = Cast<AUnitBase>
 		(UGameplayStatics::BeginDeferredActorSpawnFromClass
 		(this, SpawnParameter.UnitBaseClass, EnemyTransform, ESpawnActorCollisionHandlingMethod::AlwaysSpawn));
-
-		
-
-	if(SpawnParameter.UnitControllerBaseClass)
-	{
-		AAIController* AIController = GetWorld()->SpawnActor<AAIController>(SpawnParameter.UnitControllerBaseClass, FTransform());
-		AIController->Possess(UnitBase);
-	}
+	
 	
 	if (UnitBase != nullptr)
 	{
@@ -1094,6 +1535,7 @@ AUnitBase* ARTSGameModeBase::SpawnSingleUnit(FUnitSpawnParameter SpawnParameter,
 			UnitBase->SetActorLocation(NewLocation);
 		}
 
+		UnitBase->CanBeSelected = SpawnParameter.CanBeSelected;
 		
 		UGameplayStatics::FinishSpawningActor(UnitBase, EnemyTransform);
 		
@@ -1103,8 +1545,18 @@ AUnitBase* ARTSGameModeBase::SpawnSingleUnit(FUnitSpawnParameter SpawnParameter,
 		}
 
 		UnitBase->InitializeAttributes();
-		// Apply selectability from spawn parameter
-		UnitBase->CanBeSelected = SpawnParameter.CanBeSelected;
+
+		if (UnitBase->Attributes)
+		{
+			if (SpawnParameter.RunSpeed > 0)
+			{
+				UnitBase->Attributes->SetRunSpeed(SpawnParameter.RunSpeed);
+			}
+			if (SpawnParameter.BaseRunSpeed > 0)
+			{
+				UnitBase->Attributes->SetBaseRunSpeed(SpawnParameter.BaseRunSpeed);
+			}
+		}
 
 		
 		AddUnitIndexAndAssignToAllUnitsArray(UnitBase);
@@ -1137,7 +1589,8 @@ void ARTSGameModeBase::SpawnUnits_Implementation(FUnitSpawnParameter SpawnParame
 	if(UnitCount < SpawnParameter.MaxUnitSpawnCount)
 	{
 		HighestSquadId++;
-		for(int i = 0; i < SpawnParameter.UnitCount; i++)
+		int RandomCount = FMath::RandRange(SpawnParameter.MinRandomCount, SpawnParameter.MaxRandomCount);
+		for(int i = 0; i < SpawnParameter.UnitCount + RandomCount; i++)
 		{
 			// Waypointspawn
 			const FVector FirstLocation = CalcLocation(SpawnParameter.UnitOffset+Location, SpawnParameter.UnitMinRange, SpawnParameter.UnitMaxRange);
@@ -1221,6 +1674,8 @@ void ARTSGameModeBase::SpawnUnits_Implementation(FUnitSpawnParameter SpawnParame
 					FVector NewLocation = CalcLocation(FVector(UnitBase->NextWaypoint->GetActorLocation().X, UnitBase->NextWaypoint->GetActorLocation().Y, UnitBase->NextWaypoint->GetActorLocation().Z+50.f), SpawnParameter.UnitMinRange, SpawnParameter.UnitMaxRange);
 					UnitBase->SetActorLocation(NewLocation);
 				}
+
+				UnitBase->CanBeSelected = SpawnParameter.CanBeSelected;
 				
 				UGameplayStatics::FinishSpawningActor(UnitBase, EnemyTransform);
 
@@ -1239,6 +1694,18 @@ void ARTSGameModeBase::SpawnUnits_Implementation(FUnitSpawnParameter SpawnParame
 				}
 			
 				UnitBase->InitializeAttributes();
+
+				if (UnitBase->Attributes)
+				{
+					if (SpawnParameter.RunSpeed > 0)
+					{
+						UnitBase->Attributes->SetRunSpeed(SpawnParameter.RunSpeed);
+					}
+					if (SpawnParameter.BaseRunSpeed > 0)
+					{
+						UnitBase->Attributes->SetBaseRunSpeed(SpawnParameter.BaseRunSpeed);
+					}
+				}
 			
 				//UnitBase->MassActorBindingComponent->SetupMassOnUnit();
 				// Assign a new unique UnitIndex without reusing old ones

@@ -6,12 +6,9 @@
 #include "Core/WorkerData.h"
 #include "Characters/Unit/UnitBase.h"
 #include "Components/CapsuleComponent.h"
-#include "Components/ProgressBar.h"
 #include "GameModes/ResourceGameMode.h"
 #include "Net/UnrealNetwork.h"
-#include "Characters/Unit/WorkingUnitBase.h"
-#include "Interfaces/CapturePointInterface.h"
-#include "Widgets/UnitTimerWidget.h"
+#include "Characters\Unit\WorkingUnitBase.h"
 
 
 // Sets default values
@@ -54,23 +51,16 @@ AWorkArea::AWorkArea()
 	TriggerCapsule->SetupAttachment(RootComponent);
 	//TriggerCapsule->OnComponentBeginOverlap.AddDynamic(this, &AWorkArea::OnOverlapBegin);
 
-	// Create build progress widget component
-	BuildProgressWidgetComp = CreateDefaultSubobject<UWidgetComponent>(TEXT("BuildProgressWidget"));
-	BuildProgressWidgetComp->SetupAttachment(RootComponent);
-	BuildProgressWidgetComp->SetWidgetSpace(EWidgetSpace::Screen);
-	BuildProgressWidgetComp->SetDrawSize(FVector2D(100.f, 20.f));
-	BuildProgressWidgetComp->SetVisibility(false); // Start hidden
-
 	//SceneRoot->SetVisibility(false, true);
 	
 	//if (HasAuthority())
 	//{
 		bReplicates = true;
-		bAlwaysRelevant = true;
+		//bAlwaysRelevant = true;
 		//SetReplicateMovement(true);
 	//}
 
-	Mesh->SetIsReplicated(true); // was false
+	Mesh->SetIsReplicated(false); // was false
 	MaxAvailableResourceAmount = AvailableResourceAmount;
 }
 
@@ -82,20 +72,6 @@ void AWorkArea::BeginPlay()
 	SetReplicateMovement(false);
 	InitWorkerOverflowTimer();
 
-	// Setup build progress widget if this is a build area
-	if (Type == WorkAreaData::BuildArea)
-	{
-		SetupBuildProgressWidget();
-	}
-}
-
-float AWorkArea::GetArriveDistance() const
-{
-	if (TriggerCapsule)
-	{
-		return TriggerCapsule->GetScaledCapsuleRadius() - ArriveDistanceOffset;
-	}
-	return 0.0f;
 }
 
 void AWorkArea::InitWorkerOverflowTimer_Implementation()
@@ -224,9 +200,8 @@ void AWorkArea::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetim
 	DOREPLIFETIME(AWorkArea, IsNoBuildZone);
 	DOREPLIFETIME(AWorkArea, ConstructionUnitClass);
 	DOREPLIFETIME(AWorkArea, ConstructionUnit);
-	DOREPLIFETIME(AWorkArea, CurrentBuildTime);
 	DOREPLIFETIME(AWorkArea, IsExtensionArea);
-	DOREPLIFETIME(AWorkArea, SnappedTarget);
+	DOREPLIFETIME(AWorkArea, Workers);
 }
 
 void AWorkArea::OnOverlapBegin(UPrimitiveComponent* OverlappedComp, AActor* OtherActor, UPrimitiveComponent* OtherComp, int32 OtherBodyIndex, bool bFromSweep, const FHitResult& SweepResult)
@@ -287,6 +262,12 @@ void AWorkArea::HandleBaseArea(AWorkingUnitBase* Worker, AUnitBase* UnitBase, AR
 	
 			UnitBase->UnitControlTimer = 0;
 			UnitBase->SetUEPathfinding = true;
+
+			// Remove from current resource place while at base to allow better redistribution
+			if (IsValid(Worker->ResourcePlace))
+			{
+				Worker->ResourcePlace->RemoveWorkerFromArray(Worker);
+			}
 	
 			if(Worker->WorkResource)
 			{
@@ -322,6 +303,9 @@ void AWorkArea::SwitchResourceArea(AWorkingUnitBase* Worker, AUnitBase* UnitBase
 			ResourceGameMode->AddCurrentWorkersForResourceType(UnitBase->TeamId, ConvertToResourceType(NewResourcePlace->Type), +1.0f);
 		}
 		UnitBase->ResourcePlace = NewResourcePlace;
+		
+		// Register worker at the new location immediately
+		UnitBase->ResourcePlace->AddWorkerToArray(Worker);
 	}
 	else if (!UnitBase->ResourcePlace)
 	{
@@ -339,6 +323,17 @@ void AWorkArea::SwitchResourceArea(AWorkingUnitBase* Worker, AUnitBase* UnitBase
 				ResourceGameMode->AddCurrentWorkersForResourceType(UnitBase->TeamId, ConvertToResourceType(NewResourcePlace->Type), +1.0f);
 			}
 			UnitBase->ResourcePlace = NewResourcePlace;
+
+			// Register worker at the fallback location immediately
+			UnitBase->ResourcePlace->AddWorkerToArray(Worker);
+		}
+	}
+	else
+	{
+		// Even if keeping the same resource, re-register it since we removed it in HandleBaseArea
+		if (IsValid(UnitBase->ResourcePlace))
+		{
+			UnitBase->ResourcePlace->AddWorkerToArray(Worker);
 		}
 	}
 
@@ -446,17 +441,9 @@ void AWorkArea::HandleBuildArea(AWorkingUnitBase* Worker, AUnitBase* UnitBase, A
 			{
 				Worker->SetUnitState(UnitData::GoToResourceExtraction);
 				Worker->SwitchEntityTagByState(UnitData::GoToResourceExtraction, Worker->UnitStatePlaceholder);
+			}
 		}
-	}
 
-}
-
-void AWorkArea::FinishedBuild_Implementation()
-{
-	if (IsValid(SnappedTarget) && SnappedTarget->Implements<UCapturePointInterface>())
-	{
-		ICapturePointInterface::Execute_SetIsLegoTowerBuilt(SnappedTarget, Building);
-	}
 }
 
 EResourceType AWorkArea::ConvertWorkAreaTypeToResourceType(WorkAreaData::WorkAreaType WorkAreaType)
@@ -553,7 +540,6 @@ void AWorkArea::EndPlay(const EEndPlayReason::Type EndPlayReason)
 	if (UWorld* World = GetWorld())
 	{
 		World->GetTimerManager().ClearTimer(OverflowWorkersTimerHandle);
-		World->GetTimerManager().ClearTimer(BuildProgressTimerHandle);
 	}
 }
 
@@ -606,104 +592,4 @@ void AWorkArea::OnOverflowTimer()
 		// Remove worker from array via helper (ensures consistent behavior)
 		RemoveWorkerFromArray(Worker);
 	}
-}
-
-
-// ========== Build Progress Widget ==========
-
-void AWorkArea::SetupBuildProgressWidget()
-{
-	if (!BuildProgressWidgetComp)
-	{
-		UE_LOG(LogTemp, Warning, TEXT("[WorkArea] SetupBuildProgressWidget: BuildProgressWidgetComp is null"));
-		return;
-	}
-
-	// Set widget position offset
-	BuildProgressWidgetComp->SetRelativeLocation(BuildProgressWidgetOffset);
-
-	// If a widget class is set, use it
-	if (BuildProgressWidgetClass)
-	{
-		BuildProgressWidgetComp->SetWidgetClass(BuildProgressWidgetClass);
-		UE_LOG(LogTemp, Log, TEXT("[WorkArea] SetupBuildProgressWidget: Using widget class %s"), *BuildProgressWidgetClass->GetName());
-	}
-	else
-	{
-		UE_LOG(LogTemp, Warning, TEXT("[WorkArea] SetupBuildProgressWidget: No BuildProgressWidgetClass set on %s"), *GetName());
-	}
-
-	// Start update timer
-	if (GetWorld() && BuildProgressUpdateInterval > 0.f)
-	{
-		GetWorld()->GetTimerManager().SetTimer(
-			BuildProgressTimerHandle,
-			this,
-			&AWorkArea::UpdateBuildProgressWidget,
-			BuildProgressUpdateInterval,
-			true // looping
-		);
-		UE_LOG(LogTemp, Log, TEXT("[WorkArea] SetupBuildProgressWidget: Started progress timer on %s"), *GetName());
-	}
-}
-
-void AWorkArea::UpdateBuildProgressWidget()
-{
-	if (!BuildProgressWidgetComp)
-	{
-		UE_LOG(LogTemp, Warning, TEXT("[WorkArea] UpdateBuildProgressWidget: BuildProgressWidgetComp is null on %s"), *GetName());
-		return;
-	}
-
-	// Calculate build progress
-	const float Progress = (BuildTime > KINDA_SMALL_NUMBER)
-		? FMath::Clamp(CurrentBuildTime / BuildTime, 0.f, 1.f)
-		: 0.f;
-
-	// Debug log every tick
-	UE_LOG(LogTemp, Warning, TEXT("[WorkArea] UpdateBuildProgressWidget: %s - StartedBuilding=%d, CurrentBuildTime=%.2f, BuildTime=%.2f, Progress=%.1f%%"),
-		*GetName(), StartedBuilding ? 1 : 0, CurrentBuildTime, BuildTime, Progress * 100.f);
-
-	// Only show widget when building is in progress (CurrentBuildTime > 0 means building has started)
-	const bool bShouldShow = (CurrentBuildTime > 0.f) && (Progress < 1.f);
-
-	if (bShouldShow)
-	{
-		BuildProgressWidgetComp->SetVisibility(true);
-
-		// Try to update the progress bar if widget exists
-		UUserWidget* Widget = BuildProgressWidgetComp->GetUserWidgetObject();
-		UE_LOG(LogTemp, Warning, TEXT("[WorkArea] Widget exists: %s"), Widget ? TEXT("YES") : TEXT("NO"));
-
-		if (Widget)
-		{
-			// Try casting to UUnitTimerWidget for direct access
-			if (UUnitTimerWidget* TimerWidget = Cast<UUnitTimerWidget>(Widget))
-			{
-				TimerWidget->SetProgress(Progress, BuildProgressColor);
-				UE_LOG(LogTemp, Warning, TEXT("[WorkArea] SetProgress called with %.1f%%"), Progress * 100.f);
-			}
-			else
-			{
-				UE_LOG(LogTemp, Warning, TEXT("[WorkArea] Widget is NOT UUnitTimerWidget, it's %s"), *Widget->GetClass()->GetName());
-			}
-		}
-	}
-	else
-	{
-		BuildProgressWidgetComp->SetVisibility(false);
-	}
-
-	// Stop timer if build is complete
-	if (Progress >= 1.f && GetWorld())
-	{
-		GetWorld()->GetTimerManager().ClearTimer(BuildProgressTimerHandle);
-		BuildProgressWidgetComp->SetVisibility(false);
-		UE_LOG(LogTemp, Log, TEXT("[WorkArea] UpdateBuildProgressWidget: Build complete on %s, hiding widget"), *GetName());
-	}
-}
-
-bool AWorkArea::IsSnappedToTarget() const
-{
-	return IsValid(SnappedTarget);
 }

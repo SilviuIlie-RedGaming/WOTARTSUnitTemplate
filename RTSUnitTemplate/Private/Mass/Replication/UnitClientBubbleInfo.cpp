@@ -14,6 +14,11 @@ static TAutoConsoleVariable<int32> CVarRTS_Bubble_LogLevel(
 	0,
 	TEXT("Logging level for UnitClientBubbleInfo: 0=Off, 1=Warn, 2=Verbose."),
 	ECVF_Default);
+static TAutoConsoleVariable<float> CVarRTS_Bubble_NetUpdateHz(
+	TEXT("net.RTS.Bubble.NetUpdateHz"),
+	5.0f,
+	TEXT("Replication frequency (Hz) for the unit bubble. Default 5.0f to save bandwidth."),
+	ECVF_Default);
 
 // Implementierung der Fast Array Item Callbacks
 static FTransform BuildTransformFromItem(const FUnitReplicationItem& Item)
@@ -32,7 +37,8 @@ void FUnitReplicationItem::PostReplicatedAdd(const FUnitReplicationArray& InArra
 {
 	if (InArraySerializer.OwnerBubble && InArraySerializer.OwnerBubble->GetNetMode() == NM_Client)
 	{
-		UnitReplicationCache::SetLatest(NetID, BuildTransformFromItem(*this));
+		const FTransform Xf = BuildTransformFromItem(*this);
+		UnitReplicationCache::SetLatest(NetID, Xf);
 	}
 }
 
@@ -52,6 +58,17 @@ void FUnitReplicationItem::PreReplicatedRemove(const FUnitReplicationArray& InAr
 	}
 }
 
+namespace {
+	struct FUnitReplicationCacheCleanup {
+		FUnitReplicationCacheCleanup() {
+			FWorldDelegates::OnWorldCleanup.AddStatic([](UWorld* World, bool, bool) {
+				UnitReplicationCache::Clear();
+			});
+		}
+	};
+	static FUnitReplicationCacheCleanup GUnitReplicationCacheCleanup;
+}
+
 AUnitClientBubbleInfo::AUnitClientBubbleInfo(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
 {
@@ -59,12 +76,9 @@ AUnitClientBubbleInfo::AUnitClientBubbleInfo(const FObjectInitializer& ObjectIni
 	// Aktiviere Replikation für diesen Actor
 	bReplicates = true;
 	bAlwaysRelevant = true;
-	// Read desired replication rate (Hz) from CVAR; default 10
-	float Hz = 10.0f;
-	if (IConsoleVariable* Var = IConsoleManager::Get().FindConsoleVariable(TEXT("net.RTS.Bubble.NetUpdateHz")))
-	{
-		Hz = FMath::Max(0.1f, Var->GetFloat());
-	}
+	NetPriority = 0.5f; // Lower priority to allow important RPCs (like work area updates) to pass through first
+	// Read desired replication rate (Hz) from CVAR; default 5
+	float Hz = CVarRTS_Bubble_NetUpdateHz.GetValueOnGameThread();
 	SetNetUpdateFrequency(Hz);
 
 	// Setze Owner Pointer für Fast Array
@@ -85,7 +99,7 @@ void AUnitClientBubbleInfo::OnRep_Agents()
 	if (Level >= 1)
 	{
 		const int32 Count = Agents.Items.Num();
-		UE_LOG(LogTemp, Log, TEXT("[Bubble] OnRep_Agents: Items=%d (World=%s)"), Count, *GetWorld()->GetName());
+		//UE_LOG(LogTemp, Log, TEXT("[Bubble] OnRep_Agents: Items=%d (World=%s)"), Count, *GetWorld()->GetName());
 		if (Level >= 2 && Count > 0)
 		{
 			const int32 MaxLog = FMath::Min(20, Count);
@@ -95,7 +109,7 @@ void AUnitClientBubbleInfo::OnRep_Agents()
 				if (i > 0) IdList += TEXT(", ");
 				IdList += FString::Printf(TEXT("%u"), Agents.Items[i].NetID.GetValue());
 			}
-			UE_LOG(LogTemp, Log, TEXT("[Bubble] NetIDs[%d]: %s%s"), MaxLog, *IdList, (Count > MaxLog ? TEXT(" ...") : TEXT("")));
+			//UE_LOG(LogTemp, Log, TEXT("[Bubble] NetIDs[%d]: %s%s"), MaxLog, *IdList, (Count > MaxLog ? TEXT(" ...") : TEXT("")));
 		}
 	}
 }
@@ -112,7 +126,7 @@ void AUnitClientBubbleInfo::BeginPlay()
 	{
 		const ENetMode Mode = GetNetMode();
 		const TCHAR* ModeStr = (Mode == NM_DedicatedServer) ? TEXT("Server") : (Mode == NM_ListenServer ? TEXT("ListenServer") : (Mode == NM_Client ? TEXT("Client") : TEXT("Standalone")));
-		UE_LOG(LogTemp, Log, TEXT("[Bubble] BeginPlay in %s world %s, NetUpdateHz=%.1f"), ModeStr, *GetWorld()->GetName(), GetNetUpdateFrequency());
+		//UE_LOG(LogTemp, Log, TEXT("[Bubble] BeginPlay in %s world %s, NetUpdateHz=%.1f"), ModeStr, *GetWorld()->GetName(), GetNetUpdateFrequency());
 	}
 }
 

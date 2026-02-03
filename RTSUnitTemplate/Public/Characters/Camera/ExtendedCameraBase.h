@@ -10,6 +10,10 @@
 #include "Widgets/TaggedUnitSelector.h"
 #include "Widgets/TalentChooser.h"
 #include "Widgets/UnitWidgetSelector.h"
+#include "Widgets/WinConditionWidget.h"
+#include "Widgets/MapMenuWidget.h"
+#include "Widgets/StoryWidgetBase.h"
+#include "GameplayTagContainer.h"
 #include "ExtendedCameraBase.generated.h"
 
 /**
@@ -32,7 +36,7 @@ public:
 	
 	
 	UFUNCTION(BlueprintCallable, Category = RTSUnitTemplate)
-	void SetupResourceWidget(AExtendedControllerBase* CameraControllerBase);
+	bool SetupResourceWidget(AExtendedControllerBase* CameraControllerBase);
 	// Override the Tick function
 	virtual void Tick(float DeltaTime) override;
 	
@@ -76,7 +80,8 @@ public:
 	UFUNCTION(BlueprintCallable, Category = RTSUnitTemplate)
 	void Input_Tab_Released(const FInputActionValue& InputActionValue, int32 CamState);
 
-	UFUNCTION(BlueprintCallable, Category = RTSUnitTemplate)
+	void Input_V_Pressed(const FInputActionValue& InputActionValue, int32 CamState);
+
 	void Input_Tab_Released_BP(int32 CamState);
 	
 	UFUNCTION(BlueprintCallable, Category = RTSUnitTemplate)
@@ -84,6 +89,9 @@ public:
 	
 	UFUNCTION(BlueprintCallable, Category = RTSUnitTemplate)
 	void Input_Shift_Released(const FInputActionValue& InputActionValue, int32 CamState);
+
+	UFUNCTION(BlueprintCallable, Category = RTSUnitTemplate)
+	void Input_Esc_Pressed(const FInputActionValue& InputActionValue, int32 CamState);
 	/** Handles Enhanced Keyboard Inputs */
 
 	bool IsOwnedByLocalPlayer();
@@ -115,7 +123,48 @@ public:
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadWrite, Category = RTSUnitTemplate)
 	UResourceWidget* ResourceWidget;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadWrite, Category = RTSUnitTemplate)
+	UWinConditionWidget* WinConditionWidget;
+
+	FTimerHandle WinConditionDisplayTimerHandle;
+	FTimerHandle InitialWinConditionDelayTimerHandle;
+
+	UFUNCTION(BlueprintCallable, Category = RTSUnitTemplate)
+	void ShowWinConditionWidget(float Duration);
+
+	void HideWinConditionWidget();
+
+	UFUNCTION(BlueprintCallable, Category = RTSUnitTemplate)
+	bool InitializeWinConditionDisplay();
+
+	UFUNCTION()
+	void OnWinConditionChanged(AWinLoseConfigActor* Config, EWinLoseCondition NewCondition);
+
+	UFUNCTION()
+	void OnTagProgressUpdated(AWinLoseConfigActor* Config);
+
+	UFUNCTION()
+	void OnTeamIdChanged_Internal(int32 NewTeamId);
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadWrite, Category = RTSUnitTemplate)
+	UMapMenuWidget* MapMenuWidget;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadWrite, Category = RTSUnitTemplate)
+	UStoryWidgetBase* StoryWidget;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = RTSUnitTemplate)
+	float TagTime = 0.5f;
 	
+	int32 TabMode = 1;
+
+	float FKeyHoldTimes[6];
+	bool bFKeyTagAssigned[6];
+	bool bFKeyPressed[6];
+	
+	UFUNCTION(BlueprintCallable, Category = RTSUnitTemplate)
+	void UpdateTabModeUI();
+
 	UFUNCTION(BlueprintCallable, Category = RTSUnitTemplate)
 	void SetSelectorWidget(int Id, AUnitBase* SelectedActor);
 

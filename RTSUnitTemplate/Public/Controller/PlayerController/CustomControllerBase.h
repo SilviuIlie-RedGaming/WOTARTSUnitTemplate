@@ -48,6 +48,9 @@ protected:
 	TWeakObjectPtr<AUnitBase> PendingFollowTarget;
 	bool PendingFollowAttackT = false;
 
+	FTimerHandle MainHUDRetryTimerHandle;
+	int32 MainHUDRetryCount = 0;
+
 	// Helpers for follow-target deferral
 	bool IsFollowCommandReady(const TArray<AUnitBase*>& Units);
 	void ScheduleFollowRetry(const TArray<AUnitBase*>& Units, AUnitBase* FollowTarget, bool AttackT, int32 MaxAttempts = 8, float DelaySeconds = 0.5f);
@@ -104,7 +107,7 @@ public:
 		const TArray<AUnitBase*>& Units,
 		const TArray<FVector>& NewTargetLocations,
 		const TArray<float>& DesiredSpeeds,
-		float AcceptanceRadius = 50.0f,
+		const TArray<float>& AcceptanceRadii,
 		bool AttackT = false);
 
 	// Server wrapper to validate and then trigger the multicast from the authority
@@ -114,7 +117,7 @@ public:
 		const TArray<AUnitBase*>& Units,
 		const TArray<FVector>& NewTargetLocations,
 		const TArray<float>& DesiredSpeeds,
-		float AcceptanceRadius = 50.0f,
+		const TArray<float>& AcceptanceRadii,
 		bool AttackT = false);
 
 	// Client-side prediction: apply Run tag and local MoveTarget updates on each client
@@ -124,7 +127,7 @@ public:
 		const TArray<AUnitBase*>& Units,
 		const TArray<FVector>& NewTargetLocations,
 		const TArray<float>& DesiredSpeeds,
-		float AcceptanceRadius = 50.0f,
+		const TArray<float>& AcceptanceRadii,
 		bool AttackT = false);
 
 	// Apply owner ability-key toggle on client and refresh UI
@@ -135,17 +138,6 @@ public:
 	UFUNCTION(Client, Reliable)
 	void Client_ApplyTeamAbilityKeyToggle(int32 TeamId, const FString& Key, bool bEnable);
 
-	// Client-side prediction mirror for movement request
-	/*
-	UFUNCTION(Client, Reliable)
-	void Client_CorrectSetUnitMoveTarget(
-		UObject* WorldContextObject,
-		AUnitBase* Unit,
-		const FVector& NewTargetLocation,
-		float DesiredSpeed = 300.0f,
-		float AcceptanceRadius = 50.0f,
-		bool AttackT = false);*/
-
 	UFUNCTION(Server, Reliable, BlueprintCallable,  Category = RTSUnitTemplate)
 	void CorrectSetUnitMoveTargetForAbility(
 		UObject* WorldContextObject,
@@ -154,17 +146,6 @@ public:
 		float DesiredSpeed = 300.0f,
 		float AcceptanceRadius = 50.0f,
 		bool AttackT = false);
-
-	// Client-side prediction mirror for ability movement request
-	/*
-	UFUNCTION(Client, Reliable)
-	void Client_CorrectSetUnitMoveTargetForAbility(
-		UObject* WorldContextObject,
-		AUnitBase* Unit,
-		const FVector& NewTargetLocation,
-		float DesiredSpeed = 300.0f,
-		float AcceptanceRadius = 50.0f,
-		bool AttackT = false);*/
 
 	UFUNCTION(Server, Reliable)
 	void LoadUnitsMass(const TArray<AUnitBase*>& UnitsToLoad, AUnitBase* Transporter);
@@ -182,10 +163,10 @@ public:
 	
 	/** Computes offsets for an N-unit grid formation centered at (0,0). */
 	UFUNCTION(BlueprintCallable, Category = RTSUnitTemplate)
-	TArray<FVector> ComputeSlotOffsets(int32 NumUnits) const;
-	/** Builds an N×N cost matrix of squared distances from unitsto slots. */
+	TArray<FVector> ComputeSlotOffsets(const TArray<AUnitBase*>& Units, float Spacing = -1.0f) const;
+	/** Builds an N×N cost matrix of squared distances from units to slots, with size-compatibility penalties. */
 	TArray<TArray<float>> BuildCostMatrix(
-		const TArray<FVector>& UnitPositions,
+		const TArray<AUnitBase*>& Units,
 		const TArray<FVector>& SlotOffsets,
 		const FVector& TargetCenter) const;
 	
@@ -197,8 +178,10 @@ public:
 	
 	/** Recalculates and stores unit formation offsets around TargetCenter. */
 	UFUNCTION(BlueprintCallable, Category = RTSUnitTemplate)
-	void RecalculateFormation(const FVector& TargetCenter);
+	void RecalculateFormation(const FVector& TargetCenter, float Spacing = -1.0f);
 
+	/** Validates and adjusts a target location and formation offsets to fit on the NavMesh. */
+	bool ValidateAndAdjustGridLocation(const TArray<AUnitBase*>& Units, FVector& InOutLocation, TArray<FVector>& OutOffsets, float& OutSpacing);
 
 	UFUNCTION(BlueprintCallable, Category = RTSUnitTemplate)
 	void SetHoldPositionOnSelectedUnits();
@@ -273,6 +256,10 @@ public:
 	UPROPERTY()
 	ASelectionCircleActor* SelectionCircleActor;
 	
+	/** The extent used when projecting a point to the NavMesh to validate move commands. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "RTS|Navigation")
+	FVector NavMeshProjectionExtent = FVector(50.f, 50.f, 250.f);
+
 	UFUNCTION()
 	void UpdateSelectionCircles();
 
@@ -291,4 +278,25 @@ public:
 	UFUNCTION(Server, Reliable)
 	void Server_SetPendingTeam(int32 TeamId);
 
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = RTSUnitTemplate)
+	bool SwapAttackMove = false;
+
+	UFUNCTION(BlueprintCallable, Category = RTSUnitTemplate)
+	void HandleAttackMovePressed();
+
+	void ShowFriendlyHealthbars();
+
+	UFUNCTION(Server, Reliable)
+	void Server_ShowFriendlyHealthbars(const TArray<AUnitBase*>& Units);
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = RTSUnitTemplate)
+	TArray<TSubclassOf<class UUserWidget>> MainHUDs;
+
+	UPROPERTY(BlueprintReadOnly, Category = RTSUnitTemplate)
+	class UUserWidget* MainHUDInstance;
+
+	UFUNCTION(Client, Reliable)
+	void Client_InitializeMainHUD();
+
+	void Retry_InitializeMainHUD();
 };

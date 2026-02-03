@@ -51,6 +51,10 @@ namespace
 		if (const UCapsuleComponent* Capsule = Target->FindComponentByClass<UCapsuleComponent>())
 		{
 			Radius2D = Capsule->GetScaledCapsuleRadius();
+			if (const UMassActorBindingComponent* BindingComponent = Target->FindComponentByClass<UMassActorBindingComponent>())
+			{
+				Radius2D += BindingComponent->AdditionalCapsuleRadius;
+			}
 		}
 		else
 		{
@@ -151,7 +155,10 @@ void AProjectile::InitISMComponent(FTransform Transform)
 		}
 
 		const FVector StartLocation = Transform.GetLocation();
-		FlightDirection = (TargetLocation - StartLocation).GetSafeNormal();
+		if (!TargetLocation.IsNearlyZero())
+		{
+			FlightDirection = (TargetLocation - StartLocation).GetSafeNormal();
+		}
 	}
 }
 
@@ -178,8 +185,10 @@ void AProjectile::Init(AActor* TargetActor, AActor* ShootingActor)
 		MovementSpeed = ShootingUnit->Attributes->GetProjectileSpeed();
 
 
-		if(ShootingUnit->bUseSkeletalMovement)
-			ShooterLocation = ShootingUnit->GetActorLocation();
+		if (ShootingUnit->bUseSkeletalMovement)
+		{
+			ShooterLocation = ShootingUnit->GetProjectileSpawnLocation();
+		}
 		else
 		{
 			FTransform InstanceXform;
@@ -189,7 +198,7 @@ void AProjectile::Init(AActor* TargetActor, AActor* ShootingActor)
 		
 		InitArc(ShooterLocation);
 	}
-	
+	bIsInitialized = true;
 }
 
 void AProjectile::InitForAbility(AActor* TargetActor, AActor* ShootingActor)
@@ -210,11 +219,17 @@ void AProjectile::InitForAbility(AActor* TargetActor, AActor* ShootingActor)
 		}
 	}
 	
-	if(ShootingActor)
-		ShooterLocation = ShootingActor->GetActorLocation();
-	
-	
 	AUnitBase* ShootingUnit = Cast<AUnitBase>(Shooter);
+	if (ShootingUnit && ShootingUnit->bUseSkeletalMovement)
+	{
+		ShooterLocation = ShootingUnit->GetProjectileSpawnLocation();
+	}
+	else if (Shooter)
+	{
+		ShooterLocation = Shooter->GetActorLocation();
+	}
+	
+	
 	if(ShootingUnit)
 	{
 		//Damage = ShootingUnit->Attributes->GetAttackDamage();
@@ -223,7 +238,7 @@ void AProjectile::InitForAbility(AActor* TargetActor, AActor* ShootingActor)
 	}
 
 	InitArc(ShooterLocation);
-	
+	bIsInitialized = true;
 }
 
 void AProjectile::InitForLocationPosition(FVector Aim, AActor* ShootingActor)
@@ -233,10 +248,16 @@ void AProjectile::InitForLocationPosition(FVector Aim, AActor* ShootingActor)
 	TargetLocation = Aim;
 	SetOwner(Shooter);
 	
-	if(ShootingActor)
-		ShooterLocation = ShootingActor->GetActorLocation();
-	
 	AUnitBase* ShootingUnit = Cast<AUnitBase>(Shooter);
+	if (ShootingUnit && ShootingUnit->bUseSkeletalMovement)
+	{
+		ShooterLocation = ShootingUnit->GetProjectileSpawnLocation();
+	}
+	else if (Shooter)
+	{
+		ShooterLocation = Shooter->GetActorLocation();
+	}
+	
 	if(ShootingUnit)
 	{
 		//Damage = ShootingUnit->Attributes->GetAttackDamage();
@@ -297,7 +318,7 @@ void AProjectile::BeginPlay()
 
 void AProjectile::InitArc(FVector ArcBeginLocation)
 {
-	if (ArcHeight <= 0.f) return;
+	if (ArcHeight <= 0.f && ArcHeightDistanceFactor <= 0.f) return;
 
 	ArcStartLocation = ArcBeginLocation; // <<< ADD THIS
 }
@@ -308,6 +329,7 @@ void AProjectile::GetLifetimeReplicatedProps(TArray< FLifetimeProperty > & OutLi
 	DOREPLIFETIME(AProjectile, Target);
 	DOREPLIFETIME(AProjectile, Shooter);
 	DOREPLIFETIME(AProjectile, ArcHeight);
+	DOREPLIFETIME(AProjectile, ArcHeightDistanceFactor);
 
 	DOREPLIFETIME(AProjectile, ImpactSound);
 	DOREPLIFETIME(AProjectile, ImpactVFX);
@@ -461,7 +483,7 @@ void AProjectile::Tick(float DeltaTime)
 		}
 		if (HasAuthority()) Destroy(true, false);
 	}
-	else if (ArcHeight > 0.f)
+	else if (ArcHeight > 0.f || ArcHeightDistanceFactor > 0.f)
 	{
 		FlyInArc(DeltaTime);
 	}else if(Target)
@@ -551,7 +573,7 @@ void AProjectile::FlyToUnitTarget(float DeltaSeconds)
 
 void AProjectile::FlyToLocationTarget(float DeltaSeconds)
 {
-	if (!bIsInitialized) return;
+	if (!bIsInitialized && !Shooter) return;
 
     // --- 1. Get current transform FROM THE INSTANCE ---
     FTransform CurrentTransform;
@@ -568,6 +590,11 @@ void AProjectile::FlyToLocationTarget(float DeltaSeconds)
 	{
 		// The target is the same as the start, destroy the projectile to prevent errors
 		FlightDirection = (TargetLocation - CurrentLocation).GetSafeNormal();
+
+		if (FlightDirection.IsNearlyZero(0.1f) && Shooter)
+		{
+			FlightDirection = Shooter->GetActorForwardVector();
+		}
 	}
 	
     const FVector FrameMovement = FlightDirection * MovementSpeed * DeltaSeconds * 10.f;
@@ -649,6 +676,22 @@ void AProjectile::FlyInArc(float DeltaTime)
     }
     ISMComponent->GetInstanceTransform(InstanceIndex, /*out*/ CurrentTransform, /*worldSpace=*/ true);
 
+	if (Shooter)
+	{
+		if (ArcStartLocation.IsNearlyZero(0.1f))
+		{
+			if (!ShooterLocation.IsNearlyZero(0.1f))
+				ArcStartLocation = ShooterLocation;
+			else
+				ArcStartLocation = Shooter->GetActorLocation();
+		}
+
+		if (TargetLocation.IsNearlyZero(0.1f))
+		{
+			TargetLocation = ArcStartLocation + Shooter->GetActorForwardVector() * 10000.f;
+		}
+	}
+
     // --- 2. Update target location if it's a moving target ---
     if (FollowTarget && Target)
     {
@@ -677,7 +720,8 @@ void AProjectile::FlyInArc(float DeltaTime)
 
     // The Z position is offset by a sine wave to create the arc
     // Sin(0) = 0, Sin(PI/2) = 1 (peak), Sin(PI) = 0 (end)
-    float ZOffset = FMath::Sin(Alpha * PI) * ArcHeight;
+    float CurrentArcHeight = ArcHeight + (TotalDistance * ArcHeightDistanceFactor);
+    float ZOffset = FMath::Sin(Alpha * PI) * CurrentArcHeight;
     NewLocation.Z += ZOffset;
     
     FTransform NewTransform = CurrentTransform;
@@ -792,9 +836,9 @@ void AProjectile::Impact(AActor* ImpactTarget)
 		}else if(UnitToHit && UnitToHit->TeamId != TeamId)
 		{
 			UnitToHit->ApplyInvestmentEffect(ProjectileEffect);
+			ShootingUnit->IncreaseExperience();
 		}
 				
-		ShootingUnit->IncreaseExperience();
 		if (UnitToHit->DefensiveAbilityID != EGASAbilityInputID::None)
 		{
 			UnitToHit->ActivateAbilityByInputID(UnitToHit->DefensiveAbilityID, UnitToHit->DefensiveAbilities);
@@ -899,7 +943,6 @@ void AProjectile::ImpactHeal(AActor* ImpactTarget)
 			UnitToHit->ApplyInvestmentEffect(ProjectileEffect);
 		}
 		
-		ShootingUnit->IncreaseExperience();
 		if (UnitToHit->DefensiveAbilityID != EGASAbilityInputID::None)
 		{
 			UnitToHit->ActivateAbilityByInputID(UnitToHit->DefensiveAbilityID, UnitToHit->DefensiveAbilities);

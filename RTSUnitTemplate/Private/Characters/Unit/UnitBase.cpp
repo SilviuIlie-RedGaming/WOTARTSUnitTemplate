@@ -1,12 +1,15 @@
 // Copyright 2023 Silvan Teufel / Teufel-Engineering.com All Rights Reserved.
 
 #include "Characters/Unit/UnitBase.h"
+#include "Characters/Unit/BuildingBase.h"
+#include "Actors/Waypoint.h"
 #include "GAS/AttributeSetBase.h"
 #include "AbilitySystemComponent.h"
 #include "AIController.h"
 #include "NavCollision.h"
 #include "Widgets/UnitBaseHealthBar.h"
 #include "Components/CapsuleComponent.h"
+#include "Components/InstancedStaticMeshComponent.h"
 #include "Actors/Projectile.h"
 #include "Kismet/GameplayStatics.h"
 #include "Components/SkeletalMeshComponent.h"
@@ -111,6 +114,7 @@ AUnitBase::AUnitBase(const FObjectInitializer& ObjectInitializer):Super(ObjectIn
 	SetMinNetUpdateFrequency(1);
 	GetCharacterMovement()->SetIsReplicated(false);
 	GetCapsuleComponent()->SetIsReplicated(false);
+	NavObstaclePadding = 5.0f;
 }
 
 // Called when the game starts or when spawned
@@ -332,6 +336,7 @@ void AUnitBase::GetLifetimeReplicatedProps(TArray< FLifetimeProperty > & OutLife
 	DOREPLIFETIME(AUnitBase, UnitControlTimer);
 	DOREPLIFETIME(AUnitBase, LineTraceZDistance);
 	DOREPLIFETIME(AUnitBase, CanActivateAbilities);
+	DOREPLIFETIME(AUnitBase, NavObstaclePadding);
 
 	DOREPLIFETIME(AUnitBase, EvadeDistance); // Added for Build
 	DOREPLIFETIME(AUnitBase, EvadeDistanceChase); // Added for Build
@@ -481,7 +486,23 @@ void AUnitBase::SetWalkSpeed_Implementation(float Speed)
 
 void AUnitBase::SetWaypoint(AWaypoint* NewNextWaypoint)
 {
-	NextWaypoint = NewNextWaypoint;
+	if (NextWaypoint == NewNextWaypoint) return;
+
+	if (ABuildingBase* Building = Cast<ABuildingBase>(this))
+	{
+		if (NextWaypoint && IsValid(NextWaypoint)) NextWaypoint->RemoveAssignedUnit(this);
+		NextWaypoint = NewNextWaypoint;
+		if (NextWaypoint && IsValid(NextWaypoint)) NextWaypoint->AddAssignedUnit(this);
+	}
+	else
+	{
+		NextWaypoint = NewNextWaypoint;
+	}
+}
+
+AWaypoint* AUnitBase::GetNextWaypoint() const
+{
+	return IsValid(NextWaypoint) ? NextWaypoint : nullptr;
 }
 
 void AUnitBase::SetHealth_Implementation(float NewHealth)
@@ -526,7 +547,21 @@ void AUnitBase::SetHealth_Implementation(float NewHealth)
 		GetMesh()->SetCollisionEnabled(ECollisionEnabled::NoCollision);
 		SetActorEnableCollision(false);
 		SetDeselected();
+		CanBeSelected = false;
 		SetUnitState(UnitData::Dead);
+
+		if (ABuildingBase* Building = Cast<ABuildingBase>(this))
+		{
+			if (Building->HasWaypoint && Building->NextWaypoint)
+			{
+				AWaypoint* WP = Building->NextWaypoint;
+				Building->SetWaypoint(nullptr);
+				if (HasAuthority() && WP->GetAssignedUnitCount() <= 0)
+				{
+					WP->Destroy(true, true);
+				}
+			}
+		}
 
 		// Server-authoritative: immediately remove this unit from the replicated registry to avoid stale ghosts
 		if (HasAuthority())
@@ -810,6 +845,28 @@ void AUnitBase::SetTimerWidgetCastingColor(FLinearColor Color)
 	}
 }
 
+
+FVector AUnitBase::GetProjectileSpawnLocation(const FVector& AdditionalOffset) const
+{
+	const FName ProjectileSpawnTag = TEXT("ProjectileSpawn");
+
+	// 1. Try to find a component with the specific tag
+	TArray<UActorComponent*> Comps = GetComponentsByTag(USceneComponent::StaticClass(), ProjectileSpawnTag);
+	if (Comps.Num() > 0)
+	{
+		if (USceneComponent* SpawnComp = Cast<USceneComponent>(Comps[0]))
+		{
+			return SpawnComp->GetComponentLocation();
+		}
+	}
+
+	// 2. Fallback to default offset logic
+	const FVector ShootingUnitLocation = GetMassActorLocation();
+	const FVector RotatedProjectileSpawnOffset = GetActorRotation().RotateVector(ProjectileSpawnOffset);
+	return ShootingUnitLocation + Attributes->GetProjectileScaleActorDirectionOffset() * GetActorForwardVector() + RotatedProjectileSpawnOffset + AdditionalOffset;
+}
+
+
 void AUnitBase::SpawnProjectile_Implementation(AActor* Target, AActor* Attacker) // FVector TargetLocation
 {
 	AUnitBase* ShootingUnit = Cast<AUnitBase>(Attacker);
@@ -962,10 +1019,8 @@ void AUnitBase::SpawnProjectileFromClassWithAim_Implementation(
 	FVector SpawnerLocationForAimDir = GetMassActorLocation(); // Default to actor's root location
 
     // Base spawn‐origin offset
-    const FVector RotatedProjectileSpawnOffset = GetActorRotation().RotateVector(ProjectileSpawnOffset);
-    const FVector SpawnOrigin = SpawnerLocationForAimDir
-        + Attributes->GetProjectileScaleActorDirectionOffset() * GetActorForwardVector()
-        + RotatedProjectileSpawnOffset;
+    FVector SpawnOrigin = GetProjectileSpawnLocation();
+
 
     for (int32 i = 0; i < ProjectileCount; ++i)
     {
@@ -1055,15 +1110,19 @@ bool AUnitBase::SetNextUnitToChase()
 
 
 TArray<AUnitBase*> AUnitBase::SpawnUnitsFromParameters(
-TSubclassOf<class AAIController> AIControllerBaseClass,
 TSubclassOf<class AUnitBase> UnitBaseClass, UMaterialInstance* Material, USkeletalMesh* CharacterMesh, FRotator HostMeshRotation, FVector Location,
 TEnumAsByte<UnitData::EState> UState,
 TEnumAsByte<UnitData::EState> UStatePlaceholder,
 int NewTeamId, FBuildingCost UsedConstructionCost, AWaypoint* Waypoint, int UnitCount, bool SummonContinuously, bool SpawnAsSquad, bool UseSummonDataSet, bool bSelectable)
 {
 	TArray<AUnitBase*> SpawnedUnits;
+
+	if (!IsValid(this))
+	{
+		return SpawnedUnits;
+	}
+
 	FUnitSpawnParameter SpawnParameter;
-	SpawnParameter.UnitControllerBaseClass = AIControllerBaseClass;
 	SpawnParameter.UnitBaseClass = UnitBaseClass;
 	SpawnParameter.UnitOffset = FVector3d(0.f,0.f,0.f);
 	SpawnParameter.ServerMeshRotation = HostMeshRotation;
@@ -1125,7 +1184,7 @@ int NewTeamId, FBuildingCost UsedConstructionCost, AWaypoint* Waypoint, int Unit
 			UnitBase->UnitStatePlaceholder = SpawnParameter.StatePlaceholder;
 			UnitBase->ConstructionCost = UsedConstructionCost;
 			
-			if(UnitToChase)
+			if(UnitToChase && IsValid(UnitToChase))
 			{
 				UnitBase->UnitToChase = UnitToChase;
 				UnitBase->SetUnitState(UnitData::Chase);
@@ -1135,14 +1194,15 @@ int NewTeamId, FBuildingCost UsedConstructionCost, AWaypoint* Waypoint, int Unit
 			 Cast<AActor>(UnitBase), 
 			 UnitTransform
 			);
+			UnitBase->ForceNetUpdate();
 
 			UnitBase->InitializeAttributes();
 			UnitBase->SquadId = (SpawnAsSquad ? SharedSquadId : 0);
 			// Ensure squad healthbar setup on server right after SquadId assignment
 			UnitBase->EnsureSquadHealthbarState();
 			
-			if(Waypoint)
-				UnitBase->NextWaypoint = Waypoint;
+			if(Waypoint && IsValid(Waypoint))
+				UnitBase->SetWaypoint(Waypoint);
 
 			UnitBase->ScheduleDelayedNavigationUpdate();
 			// Apply selectability flag from params
@@ -1377,39 +1437,67 @@ void AUnitBase::Multicast_RegisterBuildingAsObstacle_Implementation()
 	UWorld* World = GetWorld();
 	if (!World) return;
 
-	// Try to find a capsule collision component first…
-	UCapsuleComponent* Capsule = FindComponentByClass<UCapsuleComponent>();
 	FBox BoundsBox;
 
-	if (Capsule)
+	/*
+	if (bUseSkeletalMovement)
 	{
-		// Pull radius & half‑height (accounting for scale)
-		const float Radius = Capsule->GetScaledCapsuleRadius();
-		const float HalfHeight = Capsule->GetScaledCapsuleHalfHeight();
-		const FVector Center = Capsule->GetComponentLocation();
-
-		// Build an FBox from center±extent
-		const FVector Extents = FVector(Radius, Radius, HalfHeight);
-		BoundsBox = FBox(Center - Extents, Center + Extents);
-	}
-	else
-	{
-		// Fallback to component bounding box
-		FBox ComponentBB = GetComponentsBoundingBox();
-		if (!ComponentBB.IsValid)
+		if (USkeletalMeshComponent* MeshComp = GetMesh())
 		{
-			return;
+			BoundsBox = MeshComp->Bounds.GetBox();
 		}
+	}
+	else if (ISMComponent)
+	{
+		BoundsBox = ISMComponent->Bounds.GetBox();
+	}
+	*/
+	//if (!BoundsBox.IsValid)
+	{
+		// Try to find a capsule collision component first…
+		UCapsuleComponent* Capsule = FindComponentByClass<UCapsuleComponent>();
 
-		constexpr float BB_Padding = 10.0f;
-		BoundsBox = ComponentBB.ExpandBy(BB_Padding);
+		if (Capsule)
+		{
+			// Pull radius & half‑height (accounting for scale)
+			float Radius = Capsule->GetScaledCapsuleRadius();
+			const float HalfHeight = Capsule->GetScaledCapsuleHalfHeight();
+			const FVector Center = Capsule->GetComponentLocation();
+
+			if (const UMassActorBindingComponent* BindingComponent = FindComponentByClass<UMassActorBindingComponent>())
+			{
+				Radius += BindingComponent->AdditionalCapsuleRadius;
+			}
+
+			// Build an FBox from center±extent
+			const FVector Extents = FVector(Radius, Radius, HalfHeight);
+			BoundsBox = FBox(Center - Extents, Center + Extents);
+		}
+		else
+		{
+			// Fallback to component bounding box
+			BoundsBox = GetComponentsBoundingBox();
+			if (!BoundsBox.IsValid)
+			{
+				return;
+			}
+		}
 	}
 
 	// 2. Pad the bounds slightly to ensure full coverage
-	constexpr float Final_Padding = 10.0f; // Small padding
-	const FBox PaddedBounds = BoundsBox.ExpandBy(FVector(Final_Padding));
+	// Ensure PaddedBounds remains valid even with negative padding
+	FBox PaddedBounds = BoundsBox.ExpandBy(NavObstaclePadding);
+	if (!PaddedBounds.IsValid)
+	{
+		PaddedBounds = FBox(BoundsBox.GetCenter(), BoundsBox.GetCenter());
+	}
 	const FVector Center = PaddedBounds.GetCenter();
-	const FVector Extent = PaddedBounds.GetExtent();
+	FVector Extent = PaddedBounds.GetExtent();
+	
+	// Ensure Extent is non-negative
+	Extent.X = FMath::Max(0.0f, Extent.X);
+	Extent.Y = FMath::Max(0.0f, Extent.Y);
+	Extent.Z = FMath::Max(0.0f, Extent.Z);
 
 	// 3. Spawn a dedicated, lightweight actor to hold the nav modifier
 	NavObstacleProxy = World->SpawnActor<AActor>();
@@ -1417,7 +1505,7 @@ void AUnitBase::Multicast_RegisterBuildingAsObstacle_Implementation()
 	{
 		return;
 	}
-
+	
 	// 4. Create and configure the Box Component for the volume
 	UBoxComponent* BoxComp = NewObject<UBoxComponent>(NavObstacleProxy);
 	BoxComp->SetWorldLocation(Center);

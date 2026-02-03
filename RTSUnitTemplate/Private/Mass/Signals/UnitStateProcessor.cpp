@@ -34,6 +34,7 @@
 #include "NavModifierComponent.h"
 #include "Controller/PlayerController/CustomControllerBase.h"
 #include "Engine/World.h"
+#include "Engine/EngineTypes.h"
 #include "Kismet/KismetRenderingLibrary.h"
 #include "Engine/GameViewportClient.h"
 #include "Mass/States/ChaseStateProcessor.h"
@@ -81,6 +82,10 @@ namespace
 		if (const UCapsuleComponent* Capsule = Target->FindComponentByClass<UCapsuleComponent>())
 		{
 			Radius2D = Capsule->GetScaledCapsuleRadius();
+			if (const UMassActorBindingComponent* BindingComponent = Target->FindComponentByClass<UMassActorBindingComponent>())
+			{
+				Radius2D += BindingComponent->AdditionalCapsuleRadius;
+			}
 		}
 		else
 		{
@@ -213,8 +218,6 @@ void UUnitStateProcessor::InitializeInternal(UObject& Owner, const TSharedRef<FM
 				.AddUFunction(this, GET_FUNCTION_NAME_CHECKED(UUnitStateProcessor, SyncRepairTime));
 			SightChangeRequestDelegateHandle.Add(NewRepairSyncHandle);
 		}
-
-
 
 		ReachedBaseDelegateHandle = SignalSubsystem->GetSignalDelegateByName(UnitSignals::ReachedBase)
 			.AddUFunction(this, GET_FUNCTION_NAME_CHECKED(UUnitStateProcessor, HandleReachedBase));
@@ -483,11 +486,9 @@ void UUnitStateProcessor::SwitchState(FName SignalName, FMassEntityHandle& Entit
 	FMassActorFragment* ActorFragPtr = EntityManager.GetFragmentDataPtr<FMassActorFragment>(Entity);
 	FMassAIStateFragment* StateFragment = EntityManager.GetFragmentDataPtr<FMassAIStateFragment>(Entity);
 
-
 	//FMassCombatStatsFragment* CombatStatsFrag = EntityManager.GetFragmentDataPtr<FMassCombatStatsFragment>(Entity);
 	//if (CombatStatsFrag->TeamId == 3)
 	//UE_LOG(LogTemp, Error, TEXT("SwitchState! %s"), *SignalName.ToString());
-
 
 	if (ActorFragPtr)
 	{
@@ -1261,6 +1262,11 @@ void UUnitStateProcessor::SynchronizeUnitState(FMassEntityHandle Entity)
 
 			UpdateUnitArrayMovement(CapturedEntity, StrongUnitActor);
 
+
+			if (StrongUnitActor->GetUnitState() == UnitData::Casting && !DoesEntityHaveTag(GTEntityManager, CapturedEntity, FMassStateCastingTag::StaticStruct())) {
+				SwitchState(UnitSignals::Casting, CapturedEntity, GTEntityManager);
+			}
+
 			if (!StrongUnitActor->IsWorker) return;
 
 			if (!EntitySubsystem)
@@ -1276,9 +1282,10 @@ void UUnitStateProcessor::SynchronizeUnitState(FMassEntityHandle Entity)
 			CapturedEntitys.Emplace(CapturedEntity);
 
 			if (WorkerStats && WorkerStats->AutoMining && !StrongUnitActor->Base->IsFlying
-				&& StrongUnitActor->GetUnitState() == UnitData::Idle
 				&& !StrongUnitActor->FollowUnit
-				&& DoesEntityHaveTag(GTEntityManager, CapturedEntity, FMassStateIdleTag::StaticStruct())) {
+				&& !StrongUnitActor->bHoldPosition
+				&& ((DoesEntityHaveTag(GTEntityManager, CapturedEntity, FMassStateIdleTag::StaticStruct())
+					&& StrongUnitActor->GetUnitState() == UnitData::Idle) || (DoesEntityHaveTag(GTEntityManager, CapturedEntity, FMassStatePatrolIdleTag::StaticStruct())))) {
 				StrongUnitActor->SetUnitState(UnitData::GoToResourceExtraction);
 			}
 
@@ -1517,6 +1524,11 @@ void UUnitStateProcessor::UnitMeeleAttack(FName SignalName, TArray<FMassEntityHa
 
 							StrongAttacker->ServerMeeleImpactEvent();
 
+							if (StrongAttacker->TeamId != StrongTarget->TeamId)
+							{
+								StrongAttacker->IncreaseExperience();
+							}
+
 							// Fire melee impact VFX/SFX at the target's location via multicast RPC
 							if (APerformanceUnit* PerfAttacker = Cast<APerformanceUnit>(StrongAttacker))
 							{
@@ -1532,7 +1544,9 @@ void UUnitStateProcessor::UnitMeeleAttack(FName SignalName, TArray<FMassEntityHa
 										PerfAttacker->ScaleImpactSound,
 										ImpactLocation,
 										KillDelay,
-										PerfAttacker->RotateImpactVFX);
+										PerfAttacker->RotateImpactVFX,
+										PerfAttacker->MeeleImpactVFXDelay,
+										PerfAttacker->MeleeImpactSoundDelay);
 								}
 							}
 						}
@@ -1864,6 +1878,7 @@ void UUnitStateProcessor::HandleEndDead(FName SignalName, TArray<FMassEntityHand
 		}); // End AsyncTask Lambda
 }
 
+
 void UUnitStateProcessor::SetAbilityEnabledByKey(AUnitBase* UnitBase, const FString& Key, bool bEnable)
 {
 	const FString NormalizedKey = NormalizeAbilityKey(Key);
@@ -2137,7 +2152,6 @@ void UUnitStateProcessor::HandleSpawnBuildingRequest(FName SignalName, TArray<FM
 								}
 								FUnitSpawnParameter SpawnParameter;
 								SpawnParameter.UnitBaseClass = UnitBase->BuildArea->BuildingClass;
-								SpawnParameter.UnitControllerBaseClass = UnitBase->BuildArea->BuildingController;
 								SpawnParameter.UnitOffset = FVector(0.f, 0.f, UnitBase->BuildArea->BuildZOffset);
 								SpawnParameter.UnitMinRange = FVector(0.f);
 								SpawnParameter.UnitMaxRange = FVector(0.f);
@@ -2907,7 +2921,10 @@ void UUnitStateProcessor::HandleUnitSpawnedSignal(
 				{
 					FMassWorkerStatsFragment* WorkerStatsFrag = EntityManager.GetFragmentDataPtr<FMassWorkerStatsFragment>(E);
 					ResourceGameMode->AssignWorkAreasToWorker(Unit);
-					if (Unit->ResourcePlace)
+					if (Unit->GetUnitState() == UnitData::PatrolRandom)
+					{
+					}
+					else if (Unit->ResourcePlace)
 					{
 						FVector ResourcePosition = FindGroundLocationForActor(this, Unit->ResourcePlace, { Unit, Unit->ResourcePlace });
 						WorkerStatsFrag->ResourcePosition = ResourcePosition;
@@ -3124,8 +3141,10 @@ void UUnitStateProcessor::UpdateUnitMovement(FMassEntityHandle& Entity, AUnitBas
 
 	if (!EntityManager.IsEntityValid(Entity) || !UnitBase)
 	{
-		if (World && World->GetNetMode() == NM_Client && UnitBase)
+		if (World && UnitBase)
 		{
+			if (World->IsNetMode(NM_Client))
+			{
 			//UE_LOG(LogTemp, Warning, TEXT("[RTS.Replication] UpdateUnitMovement: Invalid Mass entity or UnitBase for %s on client. Destroying local actor to clean up zombie."), *UnitBase->GetName());
 			TWeakObjectPtr<AUnitBase> WeakUnit(UnitBase);
 			AsyncTask(ENamedThreads::GameThread, [WeakUnit]()
@@ -3135,6 +3154,7 @@ void UUnitStateProcessor::UpdateUnitMovement(FMassEntityHandle& Entity, AUnitBas
 						Strong->Destroy();
 					}
 				});
+			}
 		}
 		return;
 	}
@@ -3357,22 +3377,33 @@ void UUnitStateProcessor::HandleWorkerOrBuildingCastProgress(FMassEntityManager&
 {
 	if (!UnitBase || !StateFrag) return;
 
-	if (!UnitBase->BuildArea || !UnitBase->BuildArea->AllowAddingWorkers)
+	if (!UnitBase->BuildArea || (!UnitBase->BuildArea->AllowAddingWorkers && UnitBase->BuildArea->Origin != UnitBase))
 	{
 		UnitBase->SwitchEntityTag(FMassStateGoToBaseTag::StaticStruct());
 		return;
 	}
+
+	//if (UnitBase->BuildArea->IsExtensionArea && UnitBase->BuildArea->Origin == UnitBase)
+	//{
+		// For extension areas, the Origin building does NOT progress the build itself.
+		// The spawned ConstructionUnit handles the build progress via HandleExtensionCastForConstructionUnit.
+		// We only need to keep the Origin's state timer at 0 so it doesn't interfere with future actions (like building workers).
+		//StateFrag->StateTimer = 0.f;
+		//UnitBase->UnitControlTimer = 0.f;
+		//return;
+	//}
+
 	// Ensure worker is registered in the WorkArea while building
 	if (AWorkingUnitBase* Worker = Cast<AWorkingUnitBase>(UnitBase))
 	{
-		if (Worker->BuildArea)
+		if (Worker->BuildArea && Worker->IsWorker)
 		{
 			Worker->BuildArea->AddWorkerToArray(Worker);
 		}
 	}
 	// If more than one worker is currently building at this area (clamped by MaxWorkerCount),
 	// increase this worker's build timer additively by 0.5x per second using stored DeltaTime.
-	if (UnitBase->BuildArea)
+	if (UnitBase->BuildArea && !UnitBase->BuildArea->IsExtensionArea)
 	{
 		const int32 MaxAllowed = UnitBase->BuildArea->MaxWorkerCount > 0 ? UnitBase->BuildArea->MaxWorkerCount : UnitBase->BuildArea->Workers.Num();
 		const int32 EffectiveWorkers = FMath::Min(UnitBase->BuildArea->Workers.Num(), MaxAllowed);
@@ -3382,18 +3413,18 @@ void UUnitStateProcessor::HandleWorkerOrBuildingCastProgress(FMassEntityManager&
 			UnitBase->UnitControlTimer = StateFrag->StateTimer;
 		}
 	}
-	if (UnitBase->BuildArea->CurrentBuildTime > UnitBase->UnitControlTimer)
+	if (UnitBase->BuildArea->CurrentBuildTime > UnitBase->UnitControlTimer && !UnitBase->BuildArea->IsExtensionArea)
 	{
 		StateFrag->StateTimer = UnitBase->BuildArea->CurrentBuildTime;
 		UnitBase->UnitControlTimer = UnitBase->BuildArea->CurrentBuildTime;
 	}
-	else
+	else if (!UnitBase->BuildArea->IsExtensionArea)
 	{
 		UnitBase->BuildArea->CurrentBuildTime = UnitBase->UnitControlTimer;
 	}
 
 	// Construction site handling (optional)
-	if (UnitBase->BuildArea && UnitBase->BuildArea->ConstructionUnitClass)
+	if (UnitBase->BuildArea && UnitBase->BuildArea->ConstructionUnitClass && !UnitBase->BuildArea->IsExtensionArea)
 	{
 		const float Progress = FMath::Clamp(UnitBase->UnitControlTimer / UnitBase->BuildArea->BuildTime, 0.f, 1.f);
 		// Early safeguard: if a construction unit exists but is dead, hide and prevent any respawn
@@ -3415,9 +3446,40 @@ void UUnitStateProcessor::HandleWorkerOrBuildingCastProgress(FMassEntityManager&
 			AUnitBase* NewConstruction = GetWorld()->SpawnActorDeferred<AUnitBase>(UnitBase->BuildArea->ConstructionUnitClass, SpawnTM, nullptr, nullptr, ESpawnActorCollisionHandlingMethod::AlwaysSpawn);
 			if (NewConstruction)
 			{
+				// Ground trace at the area center to find floor Z
+				FHitResult Hit;
+				const FBox AreaBox = UnitBase->BuildArea->Mesh ? UnitBase->BuildArea->Mesh->Bounds.GetBox() : UnitBase->BuildArea->GetComponentsBoundingBox(true);
+				const FVector AreaCenter = AreaBox.GetCenter();
+				const FVector AreaSize = AreaBox.GetSize();
+				FVector Start = AreaCenter + FVector(0, 0, 10000.f);
+				FVector End   = AreaCenter - FVector(0, 0, 10000.f);
+				FCollisionQueryParams Params;
+				Params.AddIgnoredActor(UnitBase->BuildArea);
+				Params.AddIgnoredActor(NewConstruction);
+				const bool bHit = GetWorld()->LineTraceSingleByChannel(Hit, Start, End, ECC_Visibility, Params);
+				const float GroundZ = bHit ? Hit.Location.Z : BaseLoc.Z;
+
 				// Assign critical properties BEFORE finishing spawn so they're valid during BeginPlay/replication
-				NewConstruction->FlyHeight = BaseLoc.Z;
+				NewConstruction->FlyHeight = BaseLoc.Z - GroundZ; 
 				NewConstruction->TeamId = UnitBase->TeamId;
+
+				// Ensure every runtime-spawned construction unit gets a unique UnitIndex on the server.
+				// Without this, registry/linking can become unstable under lag.
+				if (ARTSGameModeBase* GM = GetWorld() ? GetWorld()->GetAuthGameMode<ARTSGameModeBase>() : nullptr)
+				{
+					if (NewConstruction->UnitIndex <= 0)
+					{
+						GM->AddUnitIndexAndAssignToAllUnitsArrayWithIndex(NewConstruction, INDEX_NONE, FUnitSpawnParameter());
+					}
+					else
+					{
+						if (!GM->AllUnits.Contains(NewConstruction))
+						{
+							GM->AllUnits.Add(NewConstruction);
+						}
+					}
+				}
+
 				// Assign the BuildingClass DefaultAttributeEffect to the ConstructionUnit so it gets the same attributes
 				if (UnitBase->BuildArea && UnitBase->BuildArea->BuildingClass)
 				{
@@ -3442,18 +3504,6 @@ void UUnitStateProcessor::HandleWorkerOrBuildingCastProgress(FMassEntityManager&
 
 				// Fit, center, and ground-align construction unit to WorkArea footprint
 				{
-					FBox AreaBox = UnitBase->BuildArea->Mesh ? UnitBase->BuildArea->Mesh->Bounds.GetBox() : UnitBase->BuildArea->GetComponentsBoundingBox(true);
-					const FVector AreaCenter = AreaBox.GetCenter();
-					const FVector AreaSize = AreaBox.GetSize();
-					// Ground trace at the area center to find floor Z
-					FHitResult Hit;
-					FVector Start = AreaCenter + FVector(0, 0, 10000.f);
-					FVector End = AreaCenter - FVector(0, 0, 10000.f);
-					FCollisionQueryParams Params;
-					Params.AddIgnoredActor(UnitBase->BuildArea);
-					Params.AddIgnoredActor(NewConstruction);
-					bool bHit = GetWorld()->LineTraceSingleByChannel(Hit, Start, End, ECC_Visibility, Params);
-					float GroundZ = bHit ? Hit.Location.Z : NewConstruction->GetActorLocation().Z;
 					// Compute uniform scale to fit XY footprint
 					FBox PreBox = NewConstruction->GetComponentsBoundingBox(true);
 					FVector UnitSize = PreBox.GetSize();

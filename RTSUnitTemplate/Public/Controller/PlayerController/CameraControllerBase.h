@@ -44,7 +44,7 @@ class RTSUNITTEMPLATE_API ACameraControllerBase : public ACustomControllerBase
 
 
 	UFUNCTION(Server, Reliable, WithValidation)
-	void Server_UpdateCameraUnitMovement(AUnitBase* Unit, const FVector& TargetLocation);
+	void Server_UpdateCameraUnitMovement(const FVector& TargetLocation);
 
 	UPROPERTY(BlueprintReadWrite, Category = "RTSUnitTemplate")
 	FVector LastCameraUnitMovementLocation = FVector::ZeroVector;
@@ -56,6 +56,9 @@ class RTSUNITTEMPLATE_API ACameraControllerBase : public ACustomControllerBase
 
 	UFUNCTION(Client, Reliable)
 	void Client_TriggerWinLoseUI(bool bWon, TSubclassOf<class UWinLoseWidget> InWidgetClass, const FString& InMapName, FName DestinationSwitchTagToEnable);
+
+	UFUNCTION(Client, Reliable)
+	void Client_InitializeWinLoseSystem();
 
 	FTimerHandle WinLoseTimerHandle;
 
@@ -145,6 +148,9 @@ public:
 	
 	UFUNCTION(BlueprintCallable, Category = RTSUnitTemplate)
 	void CameraBaseMachine(float DeltaTime);
+
+	UFUNCTION(BlueprintCallable, Category = RTSUnitTemplate)
+	void StopAllCameraMovement();
 
 	UFUNCTION(BlueprintCallable, Category = RTSUnitTemplate)
 	void CameraState_UseScreenEdges();
@@ -318,6 +324,9 @@ public:
 	UPROPERTY(BlueprintReadWrite, Category = RTSUnitTemplate)
 	bool LockCameraToCharacter = false;
 
+	UPROPERTY(BlueprintReadWrite, Category = RTSUnitTemplate)
+	bool bIsCameraMovementHaltedByUI = false;
+
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = RTSUnitTemplate)
 	bool RotateBehindCharacterIfLocked = true;
 
@@ -352,6 +361,8 @@ public:
 	float ScrollZoomCount = 0.f;
 	
 private:
+	static bool bServerTravelInProgress;
+
 	// Helper functions for scroll zoom logic
 	void HandleScrollZoomIn();
 	void HandleScrollZoomOut();

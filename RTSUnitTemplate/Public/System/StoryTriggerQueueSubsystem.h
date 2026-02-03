@@ -42,10 +42,10 @@ struct FStoryQueueItem
 	TSoftObjectPtr<UMaterialInterface> MaterialSoft;
 
 	// Center offsets in pixels
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "StoryQueue")
-	float OffsetX = 0.f;
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "StoryQueue")
-	float OffsetY = 0.f;
+	// UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "StoryQueue")
+	// float OffsetX = 0.f;
+	// UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "StoryQueue")
+	// float OffsetY = 0.f;
 
 	// Lifetime in seconds; <= 0 means persist indefinitely
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "StoryQueue")
@@ -113,6 +113,7 @@ private:
 	TObjectPtr<UStoryWidgetBase> ActiveWidget = nullptr;
 
 	FTimerHandle ActiveTimerHandle;
+	FTimerHandle NextStoryTimerHandle;
 
 	void TryPlayNext();
 	void OnActiveLifetimeFinished();

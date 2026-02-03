@@ -9,6 +9,7 @@
 #include "Materials/MaterialInstanceDynamic.h"
 #include "GameFramework/PlayerController.h"
 #include "GameFramework/CharacterMovementComponent.h"
+#include "TimerManager.h"
 
 // Sets default values
 AWaypoint::AWaypoint()
@@ -38,6 +39,7 @@ AWaypoint::AWaypoint()
 	bReplicates = true;
 	SetReplicateMovement(true);
 	SetActorHiddenInGame(true); // Start hidden to prevent flickering
+	FollowCharacter = nullptr;
 }
 
 void AWaypoint::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const
@@ -48,6 +50,7 @@ void AWaypoint::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetim
 	DOREPLIFETIME(AWaypoint, TeamId);
 	DOREPLIFETIME(AWaypoint, NextWaypoint);
 	DOREPLIFETIME(AWaypoint, AreaMarker);
+	DOREPLIFETIME(AWaypoint, FollowCharacter);
 }
 
 // Called when the game starts or when spawned
@@ -98,11 +101,52 @@ void AWaypoint::UpdateVisibility()
 	}
 }
 
+void AWaypoint::AddAssignedUnit(AUnitBase* Unit)
+{
+	if (Unit)
+	{
+		AssignedUnits.Add(Unit);
+	}
+}
+
+void AWaypoint::RemoveAssignedUnit(AUnitBase* Unit)
+{
+	if (Unit)
+	{
+		AssignedUnits.Remove(Unit);
+	}
+}
+
 // Called every frame
 void AWaypoint::Tick(float DeltaTime)
 {
 	Super::Tick(DeltaTime);
 
+	if (HasAuthority())
+	{
+		if (FollowCharacter)
+		{
+			if (!GetWorldTimerManager().IsTimerActive(FollowTimerHandle))
+			{
+				GetWorldTimerManager().SetTimer(FollowTimerHandle, this, &AWaypoint::UpdatePositionToFollowCharacter, FollowInterval, true);
+			}
+		}
+		else
+		{
+			if (GetWorldTimerManager().IsTimerActive(FollowTimerHandle))
+			{
+				GetWorldTimerManager().ClearTimer(FollowTimerHandle);
+			}
+		}
+	}
+}
+
+void AWaypoint::UpdatePositionToFollowCharacter()
+{
+	if (FollowCharacter)
+	{
+		SetActorLocation(FollowCharacter->GetActorLocation());
+	}
 }
 
 void AWaypoint::OnPlayerEnter(UPrimitiveComponent* OverlapComponent,

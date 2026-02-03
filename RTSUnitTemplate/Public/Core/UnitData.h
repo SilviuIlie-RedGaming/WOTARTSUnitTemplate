@@ -77,9 +77,10 @@ enum class EWinLoseCondition : uint8
 {
 	None,
 	AllBuildingsDestroyed,
-	TaggedUnitDestroyed,
+	TaggedUnitsDestroyed,
 	TeamReachedResourceCount,
-	TeamReachedGameTime
+	TeamReachedGameTime,
+	TaggedUnitsSpawned
 };
 
 UENUM()
@@ -364,9 +365,7 @@ struct FUnitSpawnParameter : public FTableRowBase
 	
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = RTSUnitTemplate)
 	TSubclassOf<class AUnitBase> UnitBaseClass;
-
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = RTSUnitTemplate)
-	TSubclassOf<class AAIController> UnitControllerBaseClass;
+	
 	
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = RTSUnitTemplate)
 	int UnitCount = 3;
@@ -397,6 +396,18 @@ struct FUnitSpawnParameter : public FTableRowBase
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = RTSUnitTemplate)
 	int MaxUnitSpawnCount = 10;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = RTSUnitTemplate)
+	int MinRandomCount = 0;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = RTSUnitTemplate)
+	int MaxRandomCount = 0;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = RTSUnitTemplate)
+	float RunSpeed = 0.f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = RTSUnitTemplate)
+	float BaseRunSpeed = 0.f;
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = RTSUnitTemplate)
 	USkeletalMesh* CharacterMesh;

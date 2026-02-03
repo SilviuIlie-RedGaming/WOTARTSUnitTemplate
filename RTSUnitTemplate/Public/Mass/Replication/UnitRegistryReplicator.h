@@ -29,10 +29,30 @@ public:
 	
 	// Server-only: get next NetID, starting at 1 for each game session
 	uint32 GetNextNetID();
+
+	// Server-only: block a NetID from being reused for NetIDQuarantineTime seconds
+	void QuarantineNetID(uint32 NetID);
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "RTS|Replication")
+	float NetIDQuarantineTime = 60.0f;
 	
 	// Client-side: track recent registry updates to debounce reconcile-unlink (plain members; not replicated)
 	int32 ClientOnRepCounter = 0;
 	double ClientLastOnRepTime = 0.0;
+	
+	// Check if all live units in the world are registered (useful for startup validation)
+	// Returns true if all non-dead units have a corresponding registry entry
+	UFUNCTION(BlueprintCallable, Category = "RTS|Replication")
+	bool AreAllUnitsRegistered() const;
+	
+	// Get registration progress as a ratio (0.0 to 1.0)
+	// Returns the number of registered units divided by total live units
+	UFUNCTION(BlueprintCallable, Category = "RTS|Replication")
+	float GetRegistrationProgress() const;
+	
+	// Get counts for diagnostics: OutRegistered = units in registry, OutTotal = live units in world
+	UFUNCTION(BlueprintCallable, Category = "RTS|Replication")
+	void GetRegistrationCounts(int32& OutRegistered, int32& OutTotal) const;
 	
 protected:
 	virtual void BeginPlay() override;
@@ -46,4 +66,7 @@ private:
 	
 	UPROPERTY(Transient)
 	uint32 NextNetID = 1; // not replicated; authoritative on server only
+
+	// IDs that cannot be reused yet (NetID -> ExpirationTime)
+	TMap<uint32, double> QuarantinedNetIDs;
 };

@@ -17,9 +17,13 @@
 #include "Mass/Replication/ReplicationSettings.h"
 #include "Mass/UnitMassTag.h"
 #include "MassEntitySubsystem.h"
+#include "MassActorSubsystem.h"
 #include "EngineUtils.h"
 #include "Characters/Unit/UnitBase.h"
 #include "Mass/MassActorBindingComponent.h"
+#include "GameStates/ResourceGameState.h"
+#include "GameFramework/Character.h"
+#include "GameFramework/CharacterMovementComponent.h"
 
 // Forward-declare slice control API implemented in MassUnitReplicatorBase.cpp
 namespace ReplicationSliceControl
@@ -43,13 +47,13 @@ static TAutoConsoleVariable<int32> CVarRTS_ServerKick_Enable(
 	ECVF_Default);
 static TAutoConsoleVariable<int32> CVarRTS_ServerKick_MaxPerChunk(
 	TEXT("net.RTS.ServerReplicationKick.MaxPerChunk"),
-	16,
-	TEXT("Max entities allowed per chunk this tick; chunks exceeding are deferred. Default 16."),
+	64, // Increased back to 64; throttling now handled by smart slice skipping
+	TEXT("Max entities allowed per chunk this tick; chunks exceeding are deferred. Default 64."),
 	ECVF_Default);
 static TAutoConsoleVariable<int32> CVarRTS_ServerKick_MaxPerTick(
 		TEXT("net.RTS.ServerReplicationKick.MaxPerTick"),
-		16,
-		TEXT("Max total entities processed by this processor per tick; extra chunks are skipped. Default 16."),
+		128, // Increased to 128 to allow checking more units per frame
+		TEXT("Max total entities processed by this processor per tick; extra chunks are skipped. Default 128."),
 		ECVF_Default);
 static TAutoConsoleVariable<int32> CVarRTS_ServerKick_LogLevel(
 	TEXT("net.RTS.ServerReplicationKick.LogLevel"),
@@ -74,11 +78,11 @@ static TAutoConsoleVariable<int32> CVarRTS_ServerKick_EnforceFullSlices(
 	TEXT("When 1, only process a chunk if at least MaxPerChunk budget remains (unless the chunk has < MaxPerChunk entities). This keeps slices consistently filled and avoids partial slices."),
 	ECVF_Default);
 
-// CVAR: Control the legacy server-side re-registration fallback. Default OFF now that UnitSignalingProcessor assists.
+// CVAR: Control the legacy server-side re-registration fallback. Now enabled by default for robust startup registration.
 static TAutoConsoleVariable<int32> CVarRTS_ServerKick_ReRegisterMissing(
 	TEXT("net.RTS.ServerReplicationKick.ReRegisterMissing"),
-	0,
-	TEXT("When 1, perform server-side recovery to re-register Units missing in the replication query by adding NetID and registry entries. Default 0 (disabled) because UnitSignalingProcessor assists."),
+	1,
+	TEXT("When 1, perform server-side recovery to re-register Units missing in the replication query by adding NetID and registry entries. Default 1 (enabled) for robust startup."),
 	ECVF_Default);
 
 	// File-scope signature structure and storage so we can clear on world teardown
@@ -86,6 +90,32 @@ static TAutoConsoleVariable<int32> CVarRTS_ServerKick_ReRegisterMissing(
 			struct FSig
 			{
 				FVector Loc; uint16 P=0,Y=0,R=0; FVector Scale; uint32 TagBits = 0u;
+				
+				// Optional: track uncritical data hash to detect changes without full replication? 
+				// No, FSig is just for the "Kick" decision.
+
+				bool IsNearlyEqual(const FSig& O, float LocThresh, float AngleThresh, float ScaleThresh) const
+				{
+					if (TagBits != O.TagBits) return false;
+
+					// If the unit is dead, we don't care about transform changes for the purpose of kicking replication
+					const bool bIsDead = (TagBits & UnitTagBits::Dead) != 0;
+					if (!bIsDead)
+					{
+						if (!Loc.Equals(O.Loc, LocThresh)) return false;
+						if (!Scale.Equals(O.Scale, ScaleThresh)) return false;
+						
+						// Angle check (quantized uint16)
+						auto Diff = [](uint16 a, uint16 b) { return (uint16)FMath::Abs((int32)a - (int32)b); };
+						uint16 ThresholdQ = (uint16)FMath::RoundToInt((AngleThresh / 360.0f) * 65535.0f);
+						if (Diff(P, O.P) > ThresholdQ) return false;
+						if (Diff(Y, O.Y) > ThresholdQ) return false;
+						if (Diff(R, O.R) > ThresholdQ) return false;
+					}
+
+					return true;
+				}
+
 				bool operator==(const FSig& O) const
 				{
 					return Loc.Equals(O.Loc, 0.1f) && P==O.P && Y==O.Y && R==O.R && Scale.Equals(O.Scale, 0.01f) && TagBits == O.TagBits;
@@ -156,7 +186,7 @@ UServerReplicationKickProcessor::UServerReplicationKickProcessor()
 	: EntityQuery(*this)
 {
 	bAutoRegisterWithProcessingPhases = true;
-	ExecutionFlags = (int32)EProcessorExecutionFlags::Server;
+	ExecutionFlags = (int32)EProcessorExecutionFlags::Server | (int32)EProcessorExecutionFlags::Standalone;
 	bRequiresGameThreadExecution = true;
 	ProcessingPhase = EMassProcessingPhase::PrePhysics;
 }
@@ -169,6 +199,12 @@ void UServerReplicationKickProcessor::ConfigureQueries(const TSharedRef<FMassEnt
 	// Do NOT require FMassReplicationSharedFragment here. We want to include entities that are missing it,
 	// so the replicator fallback below can still process them and populate the bubble.
 	EntityQuery.RegisterWithProcessor(*this);
+
+	StartupFreezeQuery.Initialize(EntityManager);
+	StartupFreezeQuery.AddTagRequirement<FMassStateFrozenTag>(EMassFragmentPresence::All);
+	StartupFreezeQuery.AddRequirement<FMassActorFragment>(EMassFragmentAccess::ReadWrite);
+	StartupFreezeQuery.AddRequirement<FMassAgentCharacteristicsFragment>(EMassFragmentAccess::ReadOnly);
+	StartupFreezeQuery.RegisterWithProcessor(*this);
 }
 
 void UServerReplicationKickProcessor::Execute(FMassEntityManager& EntityManager, FMassExecutionContext& Context)
@@ -183,11 +219,74 @@ void UServerReplicationKickProcessor::Execute(FMassEntityManager& EntityManager,
 	}
 	TimeSinceLastRun = 0.f;
 
-			
 	UWorld* World = GetWorld();
 	if (!World || World->GetNetMode() == NM_Client)
 	{
 		return;
+	}
+
+	// Handle global startup freeze release
+	if (AResourceGameState* GS = World->GetGameState<AResourceGameState>())
+	{
+		if (!GS->bStartupFreezeReleased)
+		{
+			// If MatchStartTime is not set (<= 0), we treat time as reached immediately.
+			// Default is -1.f, but also check for 0.f just in case.
+			const bool bTimeReached = (GS->MatchStartTime <= 0.01f) || (World->GetTimeSeconds() >= GS->MatchStartTime);
+
+			if (bTimeReached)
+			{
+				bool bCanRelease = false;
+				
+				// In Standalone or with no clients, we can release immediately when time is reached.
+				// Otherwise, wait for all units to be registered to ensure client sync.
+				// Note: GetNumPlayerControllers() might be 0 very early, which also qualifies as 'no clients yet'.
+				if (World->GetNetMode() == NM_Standalone || World->GetNetMode() == NM_ListenServer && World->GetNumPlayerControllers() <= 1)
+				{
+					bCanRelease = true;
+				}
+				else if (World->GetNetMode() == NM_DedicatedServer || World->GetNumPlayerControllers() > 1)
+				{
+					if (AUnitRegistryReplicator* Reg = AUnitRegistryReplicator::GetOrSpawn(*World))
+					{
+						if (Reg->AreAllUnitsRegistered())
+						{
+							bCanRelease = true;
+						}
+					}
+				}
+				else
+				{
+					// Fallback for any other case (e.g. early ListenServer)
+					bCanRelease = true;
+				}
+
+				if (bCanRelease)
+				{
+					StartupFreezeQuery.ForEachEntityChunk(EntityManager, Context, [&EntityManager](FMassExecutionContext& FreezeCtx)
+					{
+						const int32 Num = FreezeCtx.GetNumEntities();
+						TArrayView<FMassActorFragment> ActorList = FreezeCtx.GetMutableFragmentView<FMassActorFragment>();
+						const TConstArrayView<FMassAgentCharacteristicsFragment> CharList = FreezeCtx.GetFragmentView<FMassAgentCharacteristicsFragment>();
+						for (int32 i = 0; i < Num; ++i)
+						{
+							EntityManager.Defer().RemoveTag<FMassStateFrozenTag>(FreezeCtx.GetEntity(i));
+							if (ACharacter* Character = Cast<ACharacter>(ActorList[i].GetMutable()))
+							{
+								if (UCharacterMovementComponent* MoveComp = Character->GetCharacterMovement())
+								{
+									MoveComp->SetMovementMode(CharList[i].bIsFlying ? MOVE_Flying : MOVE_Walking);
+								}
+							}
+						}
+					});
+
+					GS->bStartupFreezeReleased = true;
+					UE_LOG(LogTemp, Log, TEXT("ServerKick: Startup freeze released for all units (MatchStartTime reached or skipped. Mode=%d, PC=%d, MatchStartTime=%.2f)."), 
+						(int32)World->GetNetMode(), World->GetNumPlayerControllers(), GS->MatchStartTime);
+				}
+			}
+		}
 	}
 	// Respect global replication mode: only run in custom Mass mode
 	if (RTSReplicationSettings::GetReplicationMode() != RTSReplicationSettings::Mass)
@@ -221,7 +320,7 @@ void UServerReplicationKickProcessor::Execute(FMassEntityManager& EntityManager,
 	{
 		if (CVarRTS_ServerKick_LogLevel.GetValueOnGameThread() >= 1)
 		{
-			UE_LOG(LogTemp, Log, TEXT("ServerKick: Init in world %s. LODSub=%p RepSub=%p"), *World->GetName(), LODSub, RepSub);
+			//UE_LOG(LogTemp, Log, TEXT("ServerKick: Init in world %s. LODSub=%p RepSub=%p"), *World->GetName(), LODSub, RepSub);
 		}
 		GLoggedInit.Add(World);
 	}
@@ -246,7 +345,7 @@ void UServerReplicationKickProcessor::Execute(FMassEntityManager& EntityManager,
 	{
 		if (CVarRTS_ServerKick_LogLevel.GetValueOnGameThread() >= 1)
 		{
-			UE_LOG(LogTemp, Log, TEXT("ServerKick: Startup replication grace ended (world=%s)"), *World->GetName());
+			//UE_LOG(LogTemp, Log, TEXT("ServerKick: Startup replication grace ended (world=%s)"), *World->GetName());
 		}
 		GLoggedGraceEnd.Add(World);
 	}
@@ -413,7 +512,7 @@ if (TotalChunksThisTick > 0)
 int32 ChunksUsedThisTick = 0;
 
 // Shared per-chunk processing lambda (handles slice selection and replication)
-auto ProcessChunk = [World, LODSub, RepSub, MaxPerChunk, MaxPerTick, &ProcessedThisTick, &EntityManager, &ChunksUsedThisTick](FMassExecutionContext& ChunkContext)
+auto ProcessChunk = [World, LODSub, RepSub, MaxPerChunk, MaxPerTick, bInGrace, &ProcessedThisTick, &EntityManager, &ChunksUsedThisTick](FMassExecutionContext& ChunkContext)
 {
 	// Use a fallback replicator instance since some entities may lack FMassReplicationSharedFragment
 	static TMap<const UWorld*, TWeakObjectPtr<UMassUnitReplicatorBase>> GReplicatorPerWorld;
@@ -593,31 +692,92 @@ auto ProcessChunk = [World, LODSub, RepSub, MaxPerChunk, MaxPerTick, &ProcessedT
 		}
 	}
 
-	// Invoke the same function the MassReplicationProcessor would call on the server.
-	Replicator->ProcessClientReplication(ChunkContext, RepCtx);
-
 	// Account budget usage for this slice
 	ProcessedThisTick += SliceSize;
 	++ChunksUsedThisTick;
+
+	// Optimization: check if any entity in the slice actually changed before calling replicator
+	bool bAnyChanged = (CVarRTS_ServerKick_ProcessCleanChunks.GetValueOnGameThread() != 0) || bInGrace;
+	
+	// Fetch thresholds (matching MassUnitReplicatorBase)
+	float LocThresh = 10.0f;
+	float AngleThresh = 5.0f;
+	float ScaleThresh = 0.02f;
+	
+	if (IConsoleVariable* Var = IConsoleManager::Get().FindConsoleVariable(TEXT("net.RTS.ServerRep.LocThresholdCm"))) LocThresh = Var->GetFloat();
+	if (IConsoleVariable* Var = IConsoleManager::Get().FindConsoleVariable(TEXT("net.RTS.ServerRep.AngleThresholdDeg"))) AngleThresh = Var->GetFloat();
+	if (IConsoleVariable* Var = IConsoleManager::Get().FindConsoleVariable(TEXT("net.RTS.ServerRep.ScaleThreshold"))) ScaleThresh = Var->GetFloat();
+
+	TArray<FSig, TInlineAllocator<64>> NewSigs;
+	NewSigs.Reserve(SliceSize);
+
+	if (!bAnyChanged)
+	{
+		for (int32 i = SliceStart; i < SliceStart + SliceSize && i < Num; ++i)
+		{
+			const uint32 ID = NetIDs[i].NetID.GetValue();
+			const FTransform& Xf = Transforms[i].GetTransform();
+			const FRotator Rot = Xf.Rotator();
+			const FMassEntityHandle EH = ChunkContext.GetEntity(i);
+
+			FSig S;
+			S.Loc = Xf.GetLocation();
+			S.P = QuantizeAngle(Rot.Pitch);
+			S.Y = QuantizeAngle(Rot.Yaw);
+			S.R = QuantizeAngle(Rot.Roll);
+			S.Scale = Xf.GetScale3D();
+			S.TagBits = BuildReplicatedTagBits(EntityManager, EH);
+			NewSigs.Add(S);
+
+			const FSig* Prev = GLastSigByID.Find(ID);
+			if (!Prev || !S.IsNearlyEqual(*Prev, LocThresh, AngleThresh, ScaleThresh))
+			{
+				bAnyChanged = true;
+				// We don't break here because we need to build all NewSigs anyway for the update below
+			}
+		}
+	}
+	else
+	{
+		// Still need to build NewSigs for storage update
+		for (int32 i = SliceStart; i < SliceStart + SliceSize && i < Num; ++i)
+		{
+			const FTransform& Xf = Transforms[i].GetTransform();
+			const FRotator Rot = Xf.Rotator();
+			const FMassEntityHandle EH = ChunkContext.GetEntity(i);
+			FSig S;
+			S.Loc = Xf.GetLocation();
+			S.P = QuantizeAngle(Rot.Pitch);
+			S.Y = QuantizeAngle(Rot.Yaw);
+			S.R = QuantizeAngle(Rot.Roll);
+			S.Scale = Xf.GetScale3D();
+			S.TagBits = BuildReplicatedTagBits(EntityManager, EH);
+			NewSigs.Add(S);
+		}
+	}
+
+	if (!bAnyChanged)
+	{
+		if (CVarRTS_ServerKick_LogLevel.GetValueOnGameThread() >= 2)
+		{
+			UE_LOG(LogTemp, Verbose, TEXT("ServerReplicationKick: Skipping clean slice Start=%d Count=%d"), SliceStart, SliceSize);
+		}
+		ReplicationSliceControl::ClearSlice();
+		return;
+	}
+
+	// Invoke the same function the MassReplicationProcessor would call on the server.
+	Replicator->ProcessClientReplication(ChunkContext, RepCtx);
 
 	// Clear slice control so other paths process full ranges by default
 	ReplicationSliceControl::ClearSlice();
 
 	// Update stored signatures after replication to reflect the latest sent state for the slice
-	for (int32 i = SliceStart; i < SliceStart + SliceSize && i < Num; ++i)
+	for (int32 i = 0; i < NewSigs.Num(); ++i)
 	{
-		const uint32 ID = NetIDs[i].NetID.GetValue();
-		const FTransform& Xf = Transforms[i].GetTransform();
-		FSig S;
-		S.Loc = Xf.GetLocation();
-		const FRotator Rot = Xf.Rotator();
-		S.P = QuantizeAngle(Rot.Pitch);
-		S.Y = QuantizeAngle(Rot.Yaw);
-		S.R = QuantizeAngle(Rot.Roll);
-		S.Scale = Xf.GetScale3D();
-		const FMassEntityHandle EH = ChunkContext.GetEntity(i);
-		S.TagBits = BuildReplicatedTagBits(EntityManager, EH);
-		GLastSigByID.FindOrAdd(ID) = S;
+		const int32 ChunkIdx = SliceStart + i;
+		const uint32 ID = NetIDs[ChunkIdx].NetID.GetValue();
+		GLastSigByID.FindOrAdd(ID) = NewSigs[i];
 	}
 };
 

@@ -40,24 +40,6 @@ APerformanceUnit::APerformanceUnit(const FObjectInitializer& ObjectInitializer):
 	if (RootComponent == nullptr) {
 		RootComponent = ObjectInitializer.CreateDefaultSubobject<USceneComponent>(this, TEXT("Root"));
 	}
-
-	HealthWidgetComp = ObjectInitializer.CreateDefaultSubobject<UWidgetComponent>(this, TEXT("Healthbar"));
-	HealthWidgetComp->SetupAttachment(RootComponent);
-	HealthWidgetComp->SetVisibility(true);
-
-	float CapsuleHalfHeight = 88.f;
-	if (UCapsuleComponent* Capsule = GetCapsuleComponent())
-	{
-		CapsuleHalfHeight = Capsule->GetUnscaledCapsuleHalfHeight();
-	}
-
-	HealthWidgetRelativeOffset = FVector(0.f, 0.f, CapsuleHalfHeight + HealthWidgetHeightOffset);
-	HealthWidgetComp->SetRelativeLocation(HealthWidgetRelativeOffset);
-
-	TimerWidgetComp = ObjectInitializer.CreateDefaultSubobject<UWidgetComponent>(this, TEXT("Timer"));
-	TimerWidgetComp->SetupAttachment(RootComponent);
-	TimerWidgetRelativeOffset = FVector(0.f, 0.f, CapsuleHalfHeight + TimerWidgetHeightOffset);
-	TimerWidgetComp->SetRelativeLocation(TimerWidgetRelativeOffset);
 }
 
 void APerformanceUnit::Tick(float DeltaTime)
@@ -65,7 +47,14 @@ void APerformanceUnit::Tick(float DeltaTime)
 	Super::Tick(DeltaTime);
 	
 	CheckViewport();
-	CheckTeamVisibility();
+	
+	// Only check team visibility every TeamVisibilityCheckInterval seconds (default 5s)
+	TeamVisibilityCheckTimer += DeltaTime;
+	if (TeamVisibilityCheckTimer >= TeamVisibilityCheckInterval)
+	{
+		CheckTeamVisibility();
+		TeamVisibilityCheckTimer = 0.f;
+	}
 	
 	if (StopVisibilityTick) return;
 		
@@ -81,11 +70,6 @@ void APerformanceUnit::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& Out
 {
 	Super::GetLifetimeReplicatedProps(OutLifetimeProps);
 	
-	DOREPLIFETIME(APerformanceUnit, HealthWidgetComp);
-	DOREPLIFETIME(APerformanceUnit, TimerWidgetComp);
-	DOREPLIFETIME(APerformanceUnit, HealthWidgetRelativeOffset);
-	DOREPLIFETIME(APerformanceUnit, TimerWidgetRelativeOffset);
-
 	DOREPLIFETIME(APerformanceUnit, MeleeImpactVFX);
 	DOREPLIFETIME(APerformanceUnit, MeleeImpactSound);
 	DOREPLIFETIME(APerformanceUnit, ScaleImpactSound);
@@ -234,11 +218,15 @@ void APerformanceUnit::HandleSquadHealthBarVisibility()
 {
 	if (!HealthWidgetComp) return;
 
-	UUnitBaseHealthBar* HealthBarWidget = Cast<UUnitBaseHealthBar>(HealthWidgetComp->GetUserWidgetObject());
-	if (!HealthBarWidget)
+	// Use cached health bar widget pointer to avoid casting every tick
+	if (!CachedHealthBarWidget)
 	{
-		HealthWidgetComp->InitWidget();
-		HealthBarWidget = Cast<UUnitBaseHealthBar>(HealthWidgetComp->GetUserWidgetObject());
+		CachedHealthBarWidget = Cast<UUnitBaseHealthBar>(HealthWidgetComp->GetUserWidgetObject());
+		if (!CachedHealthBarWidget)
+		{
+			HealthWidgetComp->InitWidget();
+			CachedHealthBarWidget = Cast<UUnitBaseHealthBar>(HealthWidgetComp->GetUserWidgetObject());
+		}
 	}
 
 	const bool bFogAllows = (!EnableFog || IsVisibleEnemy || IsMyTeam);
@@ -286,20 +274,21 @@ void APerformanceUnit::HandleSquadHealthBarVisibility()
 		{
 			HealthWidgetComp->SetWidgetClass(USquadHealthBar::StaticClass());
 			HealthWidgetComp->InitWidget();
-			HealthBarWidget = Cast<UUnitBaseHealthBar>(HealthWidgetComp->GetUserWidgetObject());
+			// Invalidate cache and re-cache after widget class switch
+			CachedHealthBarWidget = Cast<UUnitBaseHealthBar>(HealthWidgetComp->GetUserWidgetObject());
 		}
 	}
-	if (HealthBarWidget)
+	if (CachedHealthBarWidget)
 	{
-		if (HealthBarWidget->GetOwnerActor() != ThisAsUnit)
+		if (CachedHealthBarWidget->GetOwnerActor() != ThisAsUnit)
 		{
-			HealthBarWidget->SetOwnerActor(ThisAsUnit);
+			CachedHealthBarWidget->SetOwnerActor(ThisAsUnit);
 		}
 	}
 
 	HealthWidgetComp->SetVisibility(true);
 
-	USquadHealthBar* SquadHB = Cast<USquadHealthBar>(HealthBarWidget);
+	USquadHealthBar* SquadHB = Cast<USquadHealthBar>(CachedHealthBarWidget);
 	if (SquadHB)
 	{
 		const bool bShouldShowSquad = IsOnViewport && bFogAllows && SquadHB->bAlwaysShowSquadHealthbar;
@@ -310,8 +299,8 @@ void APerformanceUnit::HandleSquadHealthBarVisibility()
 			{
 				HealthBarUpdateTriggered = true;
 			}
-			HealthBarWidget->SetVisibility(ESlateVisibility::Visible);
-			HealthBarWidget->UpdateWidget();
+			CachedHealthBarWidget->SetVisibility(ESlateVisibility::Visible);
+			CachedHealthBarWidget->UpdateWidget();
 			if (!bUseSkeletalMovement)
 			{
 				FVector ALocation = GetMassActorLocation() + HealthWidgetRelativeOffset;
@@ -324,7 +313,7 @@ void APerformanceUnit::HandleSquadHealthBarVisibility()
 			{
 				HealthBarUpdateTriggered = false;
 			}
-			HealthBarWidget->SetVisibility(ESlateVisibility::Collapsed);
+			CachedHealthBarWidget->SetVisibility(ESlateVisibility::Collapsed);
 		}
 	}
 }
@@ -333,13 +322,17 @@ void APerformanceUnit::HandleStandardHealthBarVisibility()
 {
 	if (!HealthWidgetComp) return;
 
-	UUnitBaseHealthBar* HealthBarWidget = Cast<UUnitBaseHealthBar>(HealthWidgetComp->GetUserWidgetObject());
-	if (!HealthBarWidget)
+	// Use cached health bar widget pointer to avoid casting every tick
+	if (!CachedHealthBarWidget)
 	{
-		HealthWidgetComp->InitWidget();
-		HealthBarWidget = Cast<UUnitBaseHealthBar>(HealthWidgetComp->GetUserWidgetObject());
+		CachedHealthBarWidget = Cast<UUnitBaseHealthBar>(HealthWidgetComp->GetUserWidgetObject());
+		if (!CachedHealthBarWidget)
+		{
+			HealthWidgetComp->InitWidget();
+			CachedHealthBarWidget = Cast<UUnitBaseHealthBar>(HealthWidgetComp->GetUserWidgetObject());
+		}
 	}
-	if (!HealthBarWidget)
+	if (!CachedHealthBarWidget)
 	{
 		return;
 	}
@@ -361,7 +354,7 @@ void APerformanceUnit::HandleStandardHealthBarVisibility()
 
 	if (IsOnViewport && (OpenHealthWidget || bShowLevelOnly || bIsProducing) && !HealthBarUpdateTriggered && bFogAllows)
 	{
-		HealthBarWidget->SetVisibility(ESlateVisibility::Visible);
+		CachedHealthBarWidget->SetVisibility(ESlateVisibility::Visible);
 		HealthBarUpdateTriggered = true;
 	}
 	else if (HealthBarUpdateTriggered && !OpenHealthWidget && !bShowLevelOnly)
@@ -369,18 +362,18 @@ void APerformanceUnit::HandleStandardHealthBarVisibility()
 		if (bIsProducing)
 		{
 			// Production in progress - keep widget visible and update it
-			HealthBarWidget->UpdateWidget();
+			CachedHealthBarWidget->UpdateWidget();
 			return;
 		}
 
-		HealthBarWidget->SetVisibility(ESlateVisibility::Collapsed);
+		CachedHealthBarWidget->SetVisibility(ESlateVisibility::Collapsed);
 		HealthBarUpdateTriggered = false;
 	}
 
 	if (HealthBarUpdateTriggered)
 	{
-		HealthBarWidget->bShowLevelOnly = bShowLevelOnly;
-		HealthBarWidget->UpdateWidget();
+		CachedHealthBarWidget->bShowLevelOnly = bShowLevelOnly;
+		CachedHealthBarWidget->UpdateWidget();
 	}
 
 	if (!bUseSkeletalMovement && OpenHealthWidget && IsOnViewport)
@@ -597,7 +590,7 @@ void APerformanceUnit::FireEffects_Implementation(UNiagaraSystem* ImpactVFX, USo
     }
 }
 
-void APerformanceUnit::FireEffectsAtLocation_Implementation(UNiagaraSystem* ImpactVFX, USoundBase* ImpactSound, FVector ScaleVFX, float ScaleSound, const FVector Location, float KillDelay, FRotator Rotation, int32 ID)
+void APerformanceUnit::FireEffectsAtLocation_Implementation(UNiagaraSystem* ImpactVFX, USoundBase* ImpactSound, FVector ScaleVFX, float ScaleSound, const FVector Location, float KillDelay, FRotator Rotation, float EffectDelay, float SoundDelay, int32 ID)
 {
     if (IsOnViewport && (!EnableFog || IsVisibleEnemy || IsMyTeam))
     {
@@ -607,77 +600,119 @@ void APerformanceUnit::FireEffectsAtLocation_Implementation(UNiagaraSystem* Impa
             return;
         }
 
+        TWeakObjectPtr<APerformanceUnit> WeakThis = this;
+
         // Spawn the Niagara visual effect
-        UNiagaraComponent* NiagaraComp = nullptr;
         if (ImpactVFX)
         {
-            NiagaraComp = UNiagaraFunctionLibrary::SpawnSystemAtLocation(World, ImpactVFX, Location, Rotation, ScaleVFX);
-            if (NiagaraComp)
+            auto SpawnNiagara = [World, WeakThis, ImpactVFX, Location, Rotation, ScaleVFX, KillDelay, ID]()
             {
-                ActiveNiagara.Add(FActiveNiagaraEffect(NiagaraComp, ID));
-            }
-        }
-
-        // Spawn the sound effect and get its audio component
-        UAudioComponent* AudioComp = nullptr;
-        if (ImpactSound)
-        {
-            float Multiplier = ScaleSound;
-            if (UGameInstance* GI = World->GetGameInstance())
-            {
-                if (APlayerController* PC = GI->GetFirstLocalPlayerController())
+                if (APerformanceUnit* Unit = WeakThis.Get())
                 {
-                    if (AControllerBase* ControllerBase = Cast<AControllerBase>(PC))
+                    if (UNiagaraComponent* NiagaraComp = UNiagaraFunctionLibrary::SpawnSystemAtLocation(World, ImpactVFX, Location, Rotation, ScaleVFX))
                     {
-                        Multiplier *= ControllerBase->GetSoundMultiplier();
+                        Unit->ActiveNiagara.Add(FActiveNiagaraEffect(NiagaraComp, ID));
+
+                        if (KillDelay > 0.0f)
+                        {
+                            TWeakObjectPtr<UNiagaraComponent> WeakNiagaraComp = NiagaraComp;
+                            FTimerHandle TimerHandle;
+                            World->GetTimerManager().SetTimer(TimerHandle, FTimerDelegate::CreateLambda([WeakNiagaraComp]()
+                            {
+                                if (UNiagaraComponent* NC = WeakNiagaraComp.Get())
+                                {
+                                    NC->Deactivate();
+                                    NC->DestroyComponent();
+                                }
+                            }), KillDelay, false);
+                            Unit->PendingEffectTimers.Add(TimerHandle);
+                        }
                     }
                 }
-            }
-            AudioComp = UGameplayStatics::SpawnSoundAtLocation(World, ImpactSound, Location, Rotation, Multiplier);
-            if (AudioComp)
+            };
+
+            if (EffectDelay > 0.f)
             {
-                ActiveAudio.Add(AudioComp);
+                FTimerHandle VisualEffectTimerHandle;
+                World->GetTimerManager().SetTimer(VisualEffectTimerHandle, FTimerDelegate::CreateLambda(SpawnNiagara), EffectDelay, false);
+                PendingEffectTimers.Add(VisualEffectTimerHandle);
+            }
+            else
+            {
+                SpawnNiagara();
             }
         }
 
-        // If either component is valid and a kill delay is provided, set up a timer to kill them.
-        if ((NiagaraComp || AudioComp) && KillDelay > 0.0f)
+        // Spawn the sound effect
+        if (ImpactSound)
         {
-            // Create weak pointers to safely reference the components in the lambda
-            TWeakObjectPtr<UNiagaraComponent> WeakNiagaraComp = NiagaraComp;
-            TWeakObjectPtr<UAudioComponent> WeakAudioComp = AudioComp;
-
-            FTimerHandle TimerHandle;
-            World->GetTimerManager().SetTimer(TimerHandle, FTimerDelegate::CreateLambda([WeakNiagaraComp, WeakAudioComp]()
+            auto SpawnSound = [World, WeakThis, ImpactSound, Location, Rotation, ScaleSound, KillDelay]()
             {
-                // Safely check if the Niagara component still exists and then clean it up
-                if (UNiagaraComponent* NC = WeakNiagaraComp.Get())
+                if (APerformanceUnit* Unit = WeakThis.Get())
                 {
-                    NC->Deactivate();
-                    NC->DestroyComponent();
-                }
-                
-                // Safely check if the Audio component still exists and then clean it up
-                if (UAudioComponent* AC = WeakAudioComp.Get())
-                {
-                    AC->Stop();
-                    AC->DestroyComponent();
-                }
-            }), KillDelay, false);
+                    float Multiplier = ScaleSound;
+                    if (UGameInstance* GI = World->GetGameInstance())
+                    {
+                        if (APlayerController* PC = GI->GetFirstLocalPlayerController())
+                        {
+                            if (AControllerBase* ControllerBase = Cast<AControllerBase>(PC))
+                            {
+                                Multiplier *= ControllerBase->GetSoundMultiplier();
+                            }
+                        }
+                    }
 
-            PendingEffectTimers.Add(TimerHandle);
+                    if (UAudioComponent* AudioComp = UGameplayStatics::SpawnSoundAtLocation(World, ImpactSound, Location, Rotation, Multiplier))
+                    {
+                        Unit->ActiveAudio.Add(AudioComp);
+
+                        if (KillDelay > 0.0f)
+                        {
+                            TWeakObjectPtr<UAudioComponent> WeakAudioComp = AudioComp;
+                            FTimerHandle TimerHandle;
+                            World->GetTimerManager().SetTimer(TimerHandle, FTimerDelegate::CreateLambda([WeakAudioComp]()
+                            {
+                                if (UAudioComponent* AC = WeakAudioComp.Get())
+                                {
+                                    AC->Stop();
+                                    AC->DestroyComponent();
+                                }
+                            }), KillDelay, false);
+                            Unit->PendingEffectTimers.Add(TimerHandle);
+                        }
+                    }
+                }
+            };
+
+            if (SoundDelay > 0.f)
+            {
+                FTimerHandle SoundTimerHandle;
+                World->GetTimerManager().SetTimer(SoundTimerHandle, FTimerDelegate::CreateLambda(SpawnSound), SoundDelay, false);
+                PendingEffectTimers.Add(SoundTimerHandle);
+            }
+            else
+            {
+                SpawnSound();
+            }
         }
     }
 }
 
 void APerformanceUnit::CheckTimerVisibility()
 {
-	if (UUnitTimerWidget* TimerWidget = Cast<UUnitTimerWidget>(TimerWidgetComp->GetUserWidgetObject())) // Assuming you have a UUnitBaseTimer class for the timer widget
-	{
+	if (!TimerWidgetComp) return;
 
+	// Use cached timer widget pointer to avoid casting every tick
+	if (!CachedTimerWidget)
+	{
+		CachedTimerWidget = Cast<UUnitTimerWidget>(TimerWidgetComp->GetUserWidgetObject());
+	}
+
+	if (CachedTimerWidget)
+	{
 		if (IsOnViewport && IsMyTeam)
 		{
-			TimerWidget->SetVisibility(ESlateVisibility::Visible);
+			CachedTimerWidget->SetVisibility(ESlateVisibility::Visible);
 
 			if(!bUseSkeletalMovement)
 			{
@@ -687,7 +722,7 @@ void APerformanceUnit::CheckTimerVisibility()
 		}
 		else
 		{
-			TimerWidget->SetVisibility(ESlateVisibility::Collapsed);
+			CachedTimerWidget->SetVisibility(ESlateVisibility::Collapsed);
 		}
 	}
 }

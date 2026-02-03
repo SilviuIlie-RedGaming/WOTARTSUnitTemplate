@@ -91,6 +91,9 @@ protected:
 	void AssignWorkAreasToWorkers();
 
 public:
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = Work)
+	float ResourceDistanceMultiplier = 2.0f;
+
 	UFUNCTION(BlueprintCallable, Category = RTSUnitTemplate)
 	ABuildingBase* GetClosestBaseFromArray(AWorkingUnitBase* Worker, const TArray<ABuildingBase*>& Bases);
 	
@@ -134,8 +137,7 @@ public:
 	UFUNCTION(BlueprintCallable, Category = RTSUnitTemplate)
 	void RefundResourceCost(const FBuildingCost& ConstructionCost, int32 TeamId);
 	
-	UFUNCTION(BlueprintCallable, Category = RTSUnitTemplate)
-	float GetResource(int TeamId, EResourceType RType);
+	virtual float GetResource(int32 TeamId, EResourceType ResourceType) const override;
 	
 	UPROPERTY(Replicated, VisibleAnywhere, BlueprintReadOnly, Category = Work)
 	TArray<FResourceArray> TeamResources;
@@ -152,6 +154,13 @@ public:
 
 	UFUNCTION(BlueprintCallable, Category = RTSUnitTemplate)
 	virtual int32 GetMaxPopulation(int32 TeamId) const;
+	/** Checks if a specific resource type can be afforded */
+	UFUNCTION(BlueprintCallable, Category = RTSUnitTemplate)
+	bool CanAffordResource(EResourceType ResourceType, float Amount, int32 TeamId) const;
+
+	/** Similar to CanAffordConstruction, but returns an array of resources that the team is missing or cannot afford */
+	UFUNCTION(BlueprintCallable, Category = RTSUnitTemplate)
+	bool CanAffordConstructionExtended(const FBuildingCost& ConstructionCost, int32 TeamId, TArray<EResourceType>& OutMissingResources) const;
 
 	UFUNCTION(BlueprintCallable, Category = RTSUnitTemplate)
 	void AssignWorkAreasToWorker(AWorkingUnitBase* Worker);
@@ -173,6 +182,9 @@ public:
 	
 	UFUNCTION(BlueprintCallable, Category = RTSUnitTemplate)
 	int32 GetMaxWorkersForResourceType(int TeamId, EResourceType ResourceType) const;
+
+	UFUNCTION(BlueprintCallable, Category = RTSUnitTemplate)
+	bool IsWorkerDistributionSet(int TeamId) const;
 	
 	UFUNCTION(BlueprintCallable, Category = RTSUnitTemplate)
 	void SetCurrentWorkersForResourceType(int TeamId, EResourceType ResourceType, float Amount);

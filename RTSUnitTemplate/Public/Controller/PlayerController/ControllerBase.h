@@ -35,7 +35,10 @@ class RTSUNITTEMPLATE_API AControllerBase : public APlayerController
 
 public:
 	AControllerBase();
-	
+
+	UPROPERTY(BlueprintAssignable, Category = "RTSUnitTemplate|Team")
+	FOnTeamIdChanged OnTeamIdChanged;
+
 	virtual void BeginPlay() override;
 	virtual void SetupInputComponent() override;
 	virtual void GetLifetimeReplicatedProps(TArray< FLifetimeProperty > & OutLifetimeProps) const override;
@@ -158,6 +161,7 @@ public:
 
 	UFUNCTION(BlueprintCallable, Category = RTSUnitTemplate)
 	AWaypoint* CreateAWaypoint(FVector NewWPLocation, ABuildingBase* BuildingBase);
+	void UnregisterWaypointFromBuilding(ABuildingBase* Building);
 	
 	UFUNCTION(NetMulticast, Reliable)
 	void Multi_SetBuildingWaypoint(FVector NewWPLocation, AUnitBase* Unit, AWaypoint* BuildingWaypoint, bool bPlaySound);
@@ -173,8 +177,11 @@ public:
 
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Formation Settings")
-	float GridSpacing = 250.0f;
+	float GridSpacing = 70.0f;
 
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Formation Settings")
+	float GridCapsuleMultiplier = 1.5;
+	
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Formation Settings")
 	EGridShape GridFormationShape = EGridShape::Staggered;
 	
@@ -186,7 +193,7 @@ public:
 
 
 	UFUNCTION(BlueprintCallable, Category = RTSUnitTemplate)
-	void DrawDebugCircleAtLocation(UWorld* World, const FVector& Location, FColor CircleColor);
+	void DrawCircleAtLocation(UWorld* World, const FVector& Location, FColor CircleColor);
 
 	UFUNCTION(BlueprintCallable, Category = RTSUnitTemplate)
 	FVector TraceRunLocation(FVector RunLocation, bool& HitNavModifier);

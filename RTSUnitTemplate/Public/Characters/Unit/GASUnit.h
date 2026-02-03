@@ -77,6 +77,9 @@ public:
 	// This prevents spam-clicking from starting new abilities while we're handling cancellation
 	UPROPERTY(BlueprintReadOnly, Category = Ability)
 	bool bIsProcessingCancel = false;
+
+	UPROPERTY(Replicated, EditAnywhere, BlueprintReadWrite, Category = Ability)
+	int32 MaxAbilityQueueSize = 6;
 	
 	UFUNCTION(BlueprintCallable, Category=RTSUnitTemplate)
 	const TArray<FQueuedAbility>& GetQueuedAbilities();
@@ -118,6 +121,14 @@ public:
 	virtual void PossessedBy(AController* NewController) override;
 	
 	virtual void OnRep_PlayerState() override;
+
+	UFUNCTION(Server, Reliable, BlueprintCallable, meta = (DisplayName = "SetHealth", Keywords = "RTSUnitTemplate SetHealth"), Category = RTSUnitTemplate)
+	void SetHealth(float NewHealth);
+	virtual void SetHealth_Implementation(float NewHealth);
+
+	UFUNCTION(Server, Reliable, BlueprintCallable, meta = (DisplayName = "SetShield", Keywords = "RTSUnitTemplate SetShield"), Category = RTSUnitTemplate)
+	void SetShield(float NewShield);
+	virtual void SetShield_Implementation(float NewShield);
 
 	UPROPERTY(ReplicatedUsing = OnRep_ToggleUnitDetection, BlueprintReadWrite, Category = RTSUnitTemplate)
 	bool ToggleUnitDetection = false;
@@ -182,6 +193,9 @@ public:
 
 	UPROPERTY(Replicated, BlueprintReadWrite, Category=Ability)
 	FQueuedAbility CurrentSnapshot;
+
+	UPROPERTY()
+	float QueueFallbackTimer = 0.f;
 
 	UPROPERTY()
 	TWeakObjectPtr<APlayerController> CurrentInstigatorPC;

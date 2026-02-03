@@ -72,6 +72,48 @@ public:
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components")
 	USelectionDecalComponent* SelectionIcon;
 
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = RTSUnitTemplate)
+	bool HealthCompCreated = false;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = RTSUnitTemplate)
+	bool bForceWidgetPosition = true;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = RTSUnitTemplate)
+	int HideHealthBarUnitCount = 200;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = RTSUnitTemplate)
+	bool HealthBarUpdateTriggered = false;
+
+	UPROPERTY(Replicated, EditAnywhere, BlueprintReadWrite, Category = RTSUnitTemplate)
+	class UWidgetComponent* HealthWidgetComp;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = RTSUnitTemplate)
+	float HealthWidgetHeightOffset = 150.f;
+
+	UPROPERTY(Replicated, EditAnywhere, BlueprintReadWrite, Category = RTSUnitTemplate)
+	FVector HealthWidgetRelativeOffset;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = RTSUnitTemplate)
+	TSubclassOf<UUserWidget> HealthBarWidgetClass;
+
+	UPROPERTY(Replicated, EditAnywhere, BlueprintReadWrite, Category = RTSUnitTemplate)
+	class UWidgetComponent* TimerWidgetComp;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = RTSUnitTemplate)
+	float TimerWidgetHeightOffset = 100.f;
+
+	UPROPERTY(Replicated, EditAnywhere, BlueprintReadWrite, Category = RTSUnitTemplate)
+	FVector TimerWidgetRelativeOffset;
+
+protected:
+	// Cached widget pointers to avoid repeated casting every tick
+	UPROPERTY(Transient)
+	class UUnitBaseHealthBar* CachedHealthBarWidget = nullptr;
+
+	UPROPERTY(Transient)
+	class UUnitTimerWidget* CachedTimerWidget = nullptr;
+
+public:
 	//UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components")
 	//UAreaDecalComponent* AreaDecalComponent;
 
@@ -80,6 +122,9 @@ public:
 	
 	UFUNCTION(BlueprintCallable, Category = Mass)
 	bool AddStopMovementTagToEntity();
+
+	UFUNCTION(BlueprintCallable, Category = Mass)
+	bool AddStopSeparationTagToEntity();
 
 	// Apply or remove the tag that freezes only X/Y movement (allowing Z updates)
 	UFUNCTION(BlueprintCallable, Category = Mass)
@@ -138,6 +183,9 @@ public:
 	bool SyncTranslation();
 
 	UFUNCTION(BlueprintCallable, Category = Mass)
+	bool SyncRotation();
+
+	UFUNCTION(BlueprintCallable, Category = Mass)
 	bool SetTranslationLocation(FVector NewLocation);
 	
 	// Updates MoveTarget and ClientPrediction fragments to reflect a new location and desired speed
@@ -177,6 +225,9 @@ public:
 	UFUNCTION(BlueprintCallable, Category = Mass)
 	void InitializeUnitMode();
 
+	UFUNCTION(BlueprintCallable, Category = ISM)
+	int32 InitializeAdditionalISM(UInstancedStaticMeshComponent* InISMComponent);
+
 	UFUNCTION(BlueprintCallable, NetMulticast, Reliable, Category = RTSUnitTemplate)
 	void MulticastTransformSync(const FVector& Location);
 
@@ -211,6 +262,25 @@ public:
 	// bEnable starts/stops the continuous follow; YawOffsetDegrees is added to the facing yaw.
 	UFUNCTION(BlueprintCallable, NetMulticast, Reliable, Category = RTSUnitTemplate)
 	void MulticastRotateActorYawToChase(UStaticMeshComponent* MeshToRotate, float InRotateDuration, float InRotationEaseExponent, bool bEnable, float YawOffsetDegrees);
+
+	// Continuously rotate an ISM instance's Yaw to face UnitToChase (runs on server and clients)
+	// bEnable starts/stops the continuous follow; YawOffsetDegrees is added to the facing yaw.
+	UFUNCTION(BlueprintCallable, NetMulticast, Reliable, Category = RTSUnitTemplate)
+	void MulticastRotateISMYawToChase(UInstancedStaticMeshComponent* ISMToRotate, int32 InstIndex, float InRotateDuration, float InRotationEaseExponent, bool bEnable, float YawOffsetDegrees, bool bTeleport);
+
+	// Continuously rotate the whole unit's Yaw to face UnitToChase (runs on server and clients)
+	// bEnable starts/stops the continuous follow; YawOffsetDegrees is added to the facing yaw.
+	UFUNCTION(BlueprintCallable, NetMulticast, Reliable, Category = RTSUnitTemplate)
+	void MulticastRotateUnitYawToChase(float InRotateDuration, float InRotationEaseExponent, bool bEnable, float YawOffsetDegrees);
+
+	// Continuously rotate the whole unit's Yaw at a constant rate (runs on server and clients)
+	// YawRate is in degrees per second.
+	UFUNCTION(BlueprintCallable, NetMulticast, Reliable, Category = RTSUnitTemplate)
+	void MulticastContinuousUnitRotation(float YawRate, bool bEnable);
+
+	// Smoothly move the whole unit (Actor) by a relative offset (runs on server and clients)
+	UFUNCTION(BlueprintCallable, NetMulticast, Reliable, Category = RTSUnitTemplate)
+	void MulticastMoveUnitLinear(const FVector& RelativeLocationChange, float InMoveDuration, float InMoveEaseExponent);
 
 protected:
 	virtual void BeginPlay() override;
@@ -274,6 +344,26 @@ protected:
 		float EaseExp = 1.f;
 		FQuat Start = FQuat::Identity;
 		FQuat Target = FQuat::Identity;
+		bool bTeleport = true;
+	};
+	
+	struct FISMInstanceKey
+	{
+		TWeakObjectPtr<UInstancedStaticMeshComponent> Component;
+		int32 InstanceIndex;
+
+		FISMInstanceKey() : InstanceIndex(INDEX_NONE) {}
+		FISMInstanceKey(UInstancedStaticMeshComponent* InComp, int32 InIndex) : Component(InComp), InstanceIndex(InIndex) {}
+
+		bool operator==(const FISMInstanceKey& Other) const
+		{
+			return Component == Other.Component && InstanceIndex == Other.InstanceIndex;
+		}
+
+		friend uint32 GetTypeHash(const FISMInstanceKey& Key)
+		{
+			return HashCombine(GetTypeHash(Key.Component), GetTypeHash(Key.InstanceIndex));
+		}
 	};
 	
 	// Timer step for rotating arbitrary static mesh components (state stored internally in cpp)
@@ -289,10 +379,30 @@ protected:
 		float Duration = 0.f;
 		float EaseExp = 1.f;
 		float OffsetDegrees = 0.f;
+		bool bTeleport = true;
 	};
 	TMap<TWeakObjectPtr<UStaticMeshComponent>, FYawFollowData> ActiveYawFollows;
 	FTimerHandle StaticMeshYawFollowTimerHandle;
 	void StaticMeshYawFollow_Step();
+
+	TMap<FISMInstanceKey, FYawFollowData> ActiveISMInstanceYawFollows;
+	FTimerHandle ISMInstanceYawFollowTimerHandle;
+	void ISMInstanceYawFollow_Step();
+	
+	void ISMInstanceRotations_Step();
+	FTimerHandle ISMInstanceRotateTimerHandle;
+	TMap<FISMInstanceKey, FStaticMeshRotateTween> ActiveISMInstanceTweens;
+
+	// Continuous yaw-follow state for the unit itself
+	FYawFollowData UnitYawFollowData;
+	bool bUnitYawFollowEnabled = false;
+	FTimerHandle UnitYawFollowTimerHandle;
+	void UnitYawFollow_Step();
+
+	// Smooth rotation tween for the unit itself
+	FStaticMeshRotateTween UnitRotateTween;
+	FTimerHandle UnitRotateTimerHandle;
+	void UnitRotation_Step();
 
 	// Lightweight tween state for moving arbitrary static mesh components
 	struct FStaticMeshMoveTween
@@ -303,6 +413,18 @@ protected:
 		FVector Start = FVector::ZeroVector;
 		FVector Target = FVector::ZeroVector;
 	};
+
+	// Smooth movement tween for the unit itself
+	FStaticMeshMoveTween UnitMoveTween;
+	FTimerHandle UnitMoveTimerHandle;
+	void UnitMove_Step();
+
+	// Continuous constant rotation state for the unit itself
+	bool bContinuousUnitRotationEnabled = false;
+	float ContinuousUnitYawRate = 0.f;
+	FTimerHandle ContinuousUnitRotationTimerHandle;
+	void ContinuousUnitRotation_Step();
+
 	void StaticMeshMoves_Step();
 	FTimerHandle StaticMeshMoveTimerHandle;
 	TMap<TWeakObjectPtr<UStaticMeshComponent>, FStaticMeshMoveTween> ActiveStaticMeshMoveTweens;

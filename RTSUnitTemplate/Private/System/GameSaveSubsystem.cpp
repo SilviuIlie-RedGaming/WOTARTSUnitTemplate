@@ -186,7 +186,6 @@ void UGameSaveSubsystem::SaveCurrentGame(const FString& SlotName)
         W.Type = WA->Type;
         W.WorkResourceClass = WA->WorkResourceClass ? FSoftClassPath(*WA->WorkResourceClass) : FSoftClassPath();
         W.BuildingClass = WA->BuildingClass ? FSoftClassPath(*WA->BuildingClass) : FSoftClassPath();
-        W.BuildingControllerClass = WA->BuildingController ? FSoftClassPath(*WA->BuildingController) : FSoftClassPath();
         W.BuildTime = WA->BuildTime;
         W.CurrentBuildTime = WA->CurrentBuildTime;
         W.AvailableResourceAmount = WA->AvailableResourceAmount;
@@ -256,9 +255,26 @@ void UGameSaveSubsystem::OnPostLoadMapWithWorld(UWorld* LoadedWorld)
 
     if (bPendingQuickSave)
     {
-        SaveCurrentGame(TEXT("QuickSave"));
+        FString NewSlotName = GetUniqueSaveSlotName(TEXT("QuickSave"));
+        SaveCurrentGame(NewSlotName);
         bPendingQuickSave = false;
     }
+}
+
+FString UGameSaveSubsystem::GetUniqueSaveSlotName(const FString& BaseName) const
+{
+    if (!UGameplayStatics::DoesSaveGameExist(BaseName, 0))
+    {
+        return BaseName;
+    }
+
+    int32 Counter = 1;
+    while (UGameplayStatics::DoesSaveGameExist(FString::Printf(TEXT("%s_%d"), *BaseName, Counter), 0))
+    {
+        Counter++;
+    }
+
+    return FString::Printf(TEXT("%s_%d"), *BaseName, Counter);
 }
 
 void UGameSaveSubsystem::ApplyLoadedData(UWorld* LoadedWorld, URTSSaveGame* SaveData)
@@ -665,10 +681,6 @@ void UGameSaveSubsystem::ApplyLoadedData(UWorld* LoadedWorld, URTSSaveGame* Save
         if (UClass* BC = SavedWA.BuildingClass.IsValid() ? SavedWA.BuildingClass.TryLoadClass<ABuildingBase>() : nullptr)
         {
             WA->BuildingClass = BC;
-        }
-        if (UClass* BCC = SavedWA.BuildingControllerClass.IsValid() ? SavedWA.BuildingControllerClass.TryLoadClass<AAIController>() : nullptr)
-        {
-            WA->BuildingController = BCC;
         }
 
         WA->BuildTime = SavedWA.BuildTime;

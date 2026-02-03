@@ -27,6 +27,7 @@
 #include "Mass/UnitMassTag.h"
 #include "Actors/MinimapActor.h" 
 #include "Characters/Unit/BuildingBase.h"
+#include "NavigationSystem.h"
 #include "NavAreas/NavArea_Null.h"
 #include "NavMesh/RecastNavMesh.h"
 #include "System/PlayerTeamSubsystem.h"
@@ -42,6 +43,8 @@
 #include "Interfaces/CapturePointInterface.h"
 #include "UI/Notifications/NotificationSubsystem.h"
 #include "NiagaraFunctionLibrary.h"
+#include "GAS/AttributeSetBase.h"
+#include "Blueprint/UserWidget.h"
 
 
 void ACustomControllerBase::Multi_SetMyTeamUnits_Implementation(const TArray<AActor*>& AllUnits)
@@ -194,6 +197,17 @@ void ACustomControllerBase::CorrectSetUnitMoveTarget_Implementation(UObject* Wor
 
     FMassEntityManager& EntityManager = MassSubsystem->GetMutableEntityManager();
 
+	UNavigationSystemV1* NavSys = UNavigationSystemV1::GetCurrent(World);
+	if (NavSys)
+	{
+		FNavLocation NavLoc;
+		if (!NavSys->ProjectPointToNavigation(NewTargetLocation, NavLoc, NavMeshProjectionExtent))
+		{
+			UE_LOG(LogTemp, Warning, TEXT("[SingleMove] Early return: Target location %s is not on NavMesh."), *NewTargetLocation.ToString());
+			return;
+		}
+	}
+
 	FMassEntityHandle MassEntityHandle =  Unit->MassActorBindingComponent->GetMassEntityHandle();
 	
     if (!EntityManager.IsEntityValid(MassEntityHandle))
@@ -222,6 +236,7 @@ void ACustomControllerBase::CorrectSetUnitMoveTarget_Implementation(UObject* Wor
 	AiStatePtr->PlaceholderSignal = UnitSignals::Run;
 	
 	UpdateMoveTarget(*MoveTargetFragmentPtr, NewTargetLocation, DesiredSpeed, World);
+	MoveTargetFragmentPtr->SlackRadius = AcceptanceRadius;
 	
 	EntityManager.Defer().AddTag<FMassStateRunTag>(MassEntityHandle);
 	
@@ -257,14 +272,16 @@ void ACustomControllerBase::CorrectSetUnitMoveTarget_Implementation(UObject* Wor
 		TArray<AUnitBase*> UnitsArr;
 		TArray<FVector> LocationsArr;
 		TArray<float> SpeedsArr;
+		TArray<float> RadiiArr;
 		UnitsArr.Add(Unit);
 		LocationsArr.Add(NewTargetLocation);
 		SpeedsArr.Add(DesiredSpeed);
+		RadiiArr.Add(AcceptanceRadius);
 		for (FConstPlayerControllerIterator It = PCWorld->GetPlayerControllerIterator(); It; ++It)
 		{
 			if (ACustomControllerBase* PC = Cast<ACustomControllerBase>(It->Get()))
 			{
-				PC->Client_Predict_Batch_CorrectSetUnitMoveTargets(nullptr, UnitsArr, LocationsArr, SpeedsArr, AcceptanceRadius, AttackT);
+				PC->Client_Predict_Batch_CorrectSetUnitMoveTargets(nullptr, UnitsArr, LocationsArr, SpeedsArr, RadiiArr, AttackT);
 			}
 		}
 	}
@@ -274,7 +291,7 @@ void ACustomControllerBase::Batch_CorrectSetUnitMoveTargets(UObject* WorldContex
 	const TArray<AUnitBase*>& Units,
 	const TArray<FVector>& NewTargetLocations,
 	const TArray<float>& DesiredSpeeds,
-	float AcceptanceRadius,
+	const TArray<float>& AcceptanceRadii,
 	bool AttackT)
 {
 	UWorld* World = GEngine->GetWorldFromContextObject(WorldContextObject, EGetWorldErrorMode::LogAndReturnNull);
@@ -292,17 +309,31 @@ void ACustomControllerBase::Batch_CorrectSetUnitMoveTargets(UObject* WorldContex
 	}
 	FMassEntityManager& EntityManager = MassSubsystem->GetMutableEntityManager();
 
-	if (Units.Num() != NewTargetLocations.Num() || Units.Num() != DesiredSpeeds.Num())
+	UNavigationSystemV1* NavSys = UNavigationSystemV1::GetCurrent(World);
+	if (NavSys && NewTargetLocations.Num() > 0)
 	{
-		UE_LOG(LogTemp, Warning, TEXT("[BatchMove] Array size mismatch. Units:%d Locs:%d Speeds:%d (processing min count)"), Units.Num(), NewTargetLocations.Num(), DesiredSpeeds.Num());
+		FNavLocation NavLoc;
+		// Check the first target location as a representative of the move command.
+		// Using a slightly larger extent to account for formation offsets.
+		if (!NavSys->ProjectPointToNavigation(NewTargetLocations[0], NavLoc, NavMeshProjectionExtent))
+		{
+			UE_LOG(LogTemp, Warning, TEXT("[BatchMove] Early return: Target location %s is not on NavMesh."), *NewTargetLocations[0].ToString());
+			return;
+		}
 	}
 
-	const int32 Count = FMath::Min3(Units.Num(), NewTargetLocations.Num(), DesiredSpeeds.Num());
+	if (Units.Num() != NewTargetLocations.Num() || Units.Num() != DesiredSpeeds.Num() || Units.Num() != AcceptanceRadii.Num())
+	{
+		UE_LOG(LogTemp, Warning, TEXT("[BatchMove] Array size mismatch. Units:%d Locs:%d Speeds:%d Radii:%d (processing min count)"), Units.Num(), NewTargetLocations.Num(), DesiredSpeeds.Num(), AcceptanceRadii.Num());
+	}
+
+	const int32 Count = FMath::Min(Units.Num(), FMath::Min3(NewTargetLocations.Num(), DesiredSpeeds.Num(), AcceptanceRadii.Num()));
 	for (int32 Index = 0; Index < Count; ++Index)
 	{
 		AUnitBase* Unit = Units[Index];
 		const FVector& NewTargetLocation = NewTargetLocations[Index];
 		const float DesiredSpeed = DesiredSpeeds[Index];
+		const float AcceptanceRadius = AcceptanceRadii[Index];
 
 		if (!Unit)
 		{
@@ -367,6 +398,7 @@ void ACustomControllerBase::Batch_CorrectSetUnitMoveTargets(UObject* WorldContex
 		AiStatePtr->PlaceholderSignal = UnitSignals::Run;
 		
 		UpdateMoveTarget(*MoveTargetFragmentPtr, NewTargetLocation, DesiredSpeed, World);
+		MoveTargetFragmentPtr->SlackRadius = AcceptanceRadius;
 
 		// Tags manipulation
 		EntityManager.Defer().AddTag<FMassStateRunTag>(MassEntityHandle);
@@ -406,13 +438,13 @@ void ACustomControllerBase::Server_Batch_CorrectSetUnitMoveTargets_Implementatio
 	const TArray<AUnitBase*>& Units,
 	const TArray<FVector>& NewTargetLocations,
 	const TArray<float>& DesiredSpeeds,
-	float AcceptanceRadius,
+	const TArray<float>& AcceptanceRadii,
 	bool AttackT)
 {
 	// Diagnostics: server received batch move
-	UE_LOG(LogTemp, Warning, TEXT("[Server][BatchMove] Server_Batch_CorrectSetUnitMoveTargets: Units=%d"), Units.Num());
+	//UE_LOG(LogTemp, Warning, TEXT("[Server][BatchMove] Server_Batch_CorrectSetUnitMoveTargets: Units=%d"), Units.Num());
 	// Apply authoritative changes on the server
-	Batch_CorrectSetUnitMoveTargets(WorldContextObject, Units, NewTargetLocations, DesiredSpeeds, AcceptanceRadius, AttackT);
+	Batch_CorrectSetUnitMoveTargets(WorldContextObject, Units, NewTargetLocations, DesiredSpeeds, AcceptanceRadii, AttackT);
 
 
 	// Inform every client to predict locally (adds Run tag and updates MoveTarget on the client)
@@ -422,7 +454,7 @@ void ACustomControllerBase::Server_Batch_CorrectSetUnitMoveTargets_Implementatio
 		{
 			if (ACustomControllerBase* PC = Cast<ACustomControllerBase>(It->Get()))
 			{
-				PC->Client_Predict_Batch_CorrectSetUnitMoveTargets(nullptr, Units, NewTargetLocations, DesiredSpeeds, AcceptanceRadius, AttackT);
+				PC->Client_Predict_Batch_CorrectSetUnitMoveTargets(nullptr, Units, NewTargetLocations, DesiredSpeeds, AcceptanceRadii, AttackT);
 			}
 		}
 	}
@@ -434,7 +466,7 @@ void ACustomControllerBase::Client_Predict_Batch_CorrectSetUnitMoveTargets_Imple
 	const TArray<AUnitBase*>& Units,
 	const TArray<FVector>& NewTargetLocations,
 	const TArray<float>& DesiredSpeeds,
-	float AcceptanceRadius,
+	const TArray<float>& AcceptanceRadii,
 	bool AttackT)
 {
 	//UE_LOG(LogTemp, Warning, TEXT("[Client][Prediction] Received batch prediction request: Units=%d"), Units.Num());
@@ -442,7 +474,7 @@ void ACustomControllerBase::Client_Predict_Batch_CorrectSetUnitMoveTargets_Imple
 
 	if (HasAuthority())
 	{
-		UE_LOG(LogTemp, Warning, TEXT("[Client][Prediction] Early return: HasAuthority()==true. Skipping client prediction."));
+		//UE_LOG(LogTemp, Warning, TEXT("[Client][Prediction] Early return: HasAuthority()==true. Skipping client prediction."));
 		return;
 	}
 
@@ -457,43 +489,55 @@ void ACustomControllerBase::Client_Predict_Batch_CorrectSetUnitMoveTargets_Imple
 	}
 	if (!World)
 	{
-		UE_LOG(LogTemp, Warning, TEXT("[Client][Prediction] Early return: World is null (WorldContextObject=%s)."), *GetNameSafe(WorldContextObject));
+		//UE_LOG(LogTemp, Warning, TEXT("[Client][Prediction] Early return: World is null (WorldContextObject=%s)."), *GetNameSafe(WorldContextObject));
 		return;
 	}
 
 	UMassEntitySubsystem* MassSubsystem = World->GetSubsystem<UMassEntitySubsystem>();
 	if (!MassSubsystem)
 	{
-		UE_LOG(LogTemp, Warning, TEXT("[Client][Prediction] Early return: MassEntitySubsystem is null for world %s."), *GetNameSafe(World));
+		//UE_LOG(LogTemp, Warning, TEXT("[Client][Prediction] Early return: MassEntitySubsystem is null for world %s."), *GetNameSafe(World));
 		return;
 	}
 	FMassEntityManager& EntityManager = MassSubsystem->GetMutableEntityManager();
 
 	const int32 Count = FMath::Min3(Units.Num(), NewTargetLocations.Num(), DesiredSpeeds.Num());
-	UE_LOG(LogTemp, Warning, TEXT("[Client][Prediction] Begin batch: Units=%d Targets=%d Speeds=%d Count=%d World=%s"), Units.Num(), NewTargetLocations.Num(), DesiredSpeeds.Num(), Count, *GetNameSafe(World));
+
+	UNavigationSystemV1* NavSys = UNavigationSystemV1::GetCurrent(World);
+	if (NavSys && NewTargetLocations.Num() > 0)
+	{
+		FNavLocation NavLoc;
+		if (!NavSys->ProjectPointToNavigation(NewTargetLocations[0], NavLoc, NavMeshProjectionExtent))
+		{
+			//UE_LOG(LogTemp, Warning, TEXT("[Client][Prediction] Early return: Target location %s is not on NavMesh."), *NewTargetLocations[0].ToString());
+			return;
+		}
+	}
+
+	//UE_LOG(LogTemp, Warning, TEXT("[Client][Prediction] Begin batch: Units=%d Targets=%d Speeds=%d Count=%d World=%s"), Units.Num(), NewTargetLocations.Num(), DesiredSpeeds.Num(), Count, *GetNameSafe(World));
 	for (int32 Index = 0; Index < Count; ++Index)
 	{
 		AUnitBase* Unit = Units[Index];
 		if (!Unit)
 		{
-			UE_LOG(LogTemp, Warning, TEXT("[BatchMove][Client][%d] Unit is null. Skipping."), Index);
+			//UE_LOG(LogTemp, Warning, TEXT("[BatchMove][Client][%d] Unit is null. Skipping."), Index);
 			continue;
 		}
 		
 		if (!Unit->IsInitialized)
 		{
-			UE_LOG(LogTemp, Warning, TEXT("[BatchMove][Client][%s] Not initialized. Skipping."), *GetNameSafe(Unit));
+			//UE_LOG(LogTemp, Warning, TEXT("[BatchMove][Client][%s] Not initialized. Skipping."), *GetNameSafe(Unit));
 			continue;
 		}
 		if (!Unit->CanMove)
 		{
-			UE_LOG(LogTemp, Warning, TEXT("[BatchMove][Client][%s] CanMove == false. Skipping."), *GetNameSafe(Unit));
+			//UE_LOG(LogTemp, Warning, TEXT("[BatchMove][Client][%s] CanMove == false. Skipping."), *GetNameSafe(Unit));
 			continue;
 		}
 		
 		if (Unit->UnitState == UnitData::Dead)
 		{
-			UE_LOG(LogTemp, Warning, TEXT("[BatchMove][Client][%s] UnitState == Dead. Skipping."), *GetNameSafe(Unit));
+			//UE_LOG(LogTemp, Warning, TEXT("[BatchMove][Client][%s] UnitState == Dead. Skipping."), *GetNameSafe(Unit));
 			continue;
 		}
 		
@@ -506,14 +550,14 @@ void ACustomControllerBase::Client_Predict_Batch_CorrectSetUnitMoveTargets_Imple
 		FMassEntityHandle MassEntityHandle = Unit->MassActorBindingComponent ? Unit->MassActorBindingComponent->GetMassEntityHandle() : FMassEntityHandle();
 		if (!EntityManager.IsEntityValid(MassEntityHandle))
 		{
-			UE_LOG(LogTemp, Warning, TEXT("[Client][Prediction][%s] MassEntityHandle invalid. Skipping."), *GetNameSafe(Unit));
+			//UE_LOG(LogTemp, Warning, TEXT("[Client][Prediction][%s] MassEntityHandle invalid. Skipping."), *GetNameSafe(Unit));
 			continue;
 		}
 
 		FMassAIStateFragment* AiStatePtr = EntityManager.GetFragmentDataPtr<FMassAIStateFragment>(MassEntityHandle);
 		if (!AiStatePtr)
 		{
-			UE_LOG(LogTemp, Warning, TEXT("[Client][Prediction][%s] Missing FMassAIStateFragment. Skipping."), *GetNameSafe(Unit));
+			//UE_LOG(LogTemp, Warning, TEXT("[Client][Prediction][%s] Missing FMassAIStateFragment. Skipping."), *GetNameSafe(Unit));
 			continue;
 		}
 		
@@ -527,7 +571,7 @@ void ACustomControllerBase::Client_Predict_Batch_CorrectSetUnitMoveTargets_Imple
 		{
 			PredFrag->Location = NewTargetLocation;
 			PredFrag->PredDesiredSpeed = DesiredSpeed;
-			PredFrag->PredAcceptanceRadius = AcceptanceRadius;
+			PredFrag->PredAcceptanceRadius = AcceptanceRadii[Index];
 			PredFrag->bHasData = true;
 		}
 		// Ensure client won't skip movement this tick
@@ -603,6 +647,17 @@ void ACustomControllerBase::CorrectSetUnitMoveTargetForAbility_Implementation(UO
 
     FMassEntityManager& EntityManager = MassSubsystem->GetMutableEntityManager();
 
+	UNavigationSystemV1* NavSys = UNavigationSystemV1::GetCurrent(World);
+	if (NavSys)
+	{
+		FNavLocation NavLoc;
+		if (!NavSys->ProjectPointToNavigation(NewTargetLocation, NavLoc, NavMeshProjectionExtent))
+		{
+			UE_LOG(LogTemp, Warning, TEXT("[AbilityMove] Early return: Target location %s is not on NavMesh."), *NewTargetLocation.ToString());
+			return;
+		}
+	}
+
 	FMassEntityHandle MassEntityHandle =  Unit->MassActorBindingComponent->GetMassEntityHandle();
 	
     if (!EntityManager.IsEntityValid(MassEntityHandle))
@@ -625,6 +680,7 @@ void ACustomControllerBase::CorrectSetUnitMoveTargetForAbility_Implementation(UO
    	AiStatePtr->PlaceholderSignal = UnitSignals::Run;
 	
    	UpdateMoveTarget(*MoveTargetFragmentPtr, NewTargetLocation, DesiredSpeed, World);
+	MoveTargetFragmentPtr->SlackRadius = AcceptanceRadius;
 	
    	EntityManager.Defer().AddTag<FMassStateRunTag>(MassEntityHandle);
 	
@@ -658,14 +714,16 @@ void ACustomControllerBase::CorrectSetUnitMoveTargetForAbility_Implementation(UO
 		TArray<AUnitBase*> UnitsArr;
 		TArray<FVector> LocationsArr;
 		TArray<float> SpeedsArr;
+		TArray<float> RadiiArr;
 		UnitsArr.Add(Unit);
 		LocationsArr.Add(NewTargetLocation);
 		SpeedsArr.Add(DesiredSpeed);
+		RadiiArr.Add(AcceptanceRadius);
 		for (FConstPlayerControllerIterator It = PCWorld->GetPlayerControllerIterator(); It; ++It)
 		{
 			if (ACustomControllerBase* PC = Cast<ACustomControllerBase>(It->Get()))
 			{
-				PC->Client_Predict_Batch_CorrectSetUnitMoveTargets(nullptr, UnitsArr, LocationsArr, SpeedsArr, AcceptanceRadius, AttackT);
+				PC->Client_Predict_Batch_CorrectSetUnitMoveTargets(nullptr, UnitsArr, LocationsArr, SpeedsArr, RadiiArr, AttackT);
 			}
 		}
 	}
@@ -773,7 +831,12 @@ void ACustomControllerBase::LoadUnitsMass_Implementation(const TArray<AUnitBase*
 			// Send a single batched RPC for all valid mass units gathered above
 			if (BatchUnits.Num() > 0)
 			{
-    Server_Batch_CorrectSetUnitMoveTargets(GetWorld(), BatchUnits, BatchLocations, BatchSpeeds, 40.f, false);
+				TArray<float> BatchRadii;
+				for (AUnitBase* Unit : BatchUnits)
+				{
+					BatchRadii.Add(Unit->MovementAcceptanceRadius);
+				}
+				Server_Batch_CorrectSetUnitMoveTargets(GetWorld(), BatchUnits, BatchLocations, BatchSpeeds, BatchRadii, false);
 			}
 
 			if (Transporter->GetUnitState() != UnitData::Casting)
@@ -798,15 +861,25 @@ bool ACustomControllerBase::CheckClickOnTransportUnitMass(FHitResult Hit_Pawn)
 {
 	if (!Hit_Pawn.bBlockingHit) return false;
 
-
 		AActor* HitActor = Hit_Pawn.GetActor();
 		
 		AUnitBase* UnitBase = Cast<AUnitBase>(HitActor);
 	
 		if (!UnitBase || !UnitBase->CanBeSelected) return false;
 	
-		if (UnitBase && UnitBase->IsATransporter){
-			LoadUnitsMass(SelectedUnits, UnitBase);
+	if (UnitBase && UnitBase->IsATransporter){
+		if (UnitBase->Attributes && UnitBase->Attributes->GetHealth() < UnitBase->Attributes->GetMaxHealth())
+		{
+			for (const AUnitBase* SelectedUnit : SelectedUnits)
+			{
+				if (SelectedUnit && SelectedUnit->CanRepair)
+				{
+					return false;
+				}
+			}
+		}
+
+		LoadUnitsMass(SelectedUnits, UnitBase);
 			
 			UnitBase->RemoveFocusEntityTarget();
 			TArray<AUnitBase*> NewSelection;
@@ -834,6 +907,20 @@ void ACustomControllerBase::Server_SetUnitsFollowTarget_Implementation(const TAr
 	if (!HasAuthority())
 	{
 		return;
+	}
+
+	for (AUnitBase* Unit : Units)
+	{
+		if (Unit && Unit->IsWorker && FollowTarget)
+		{
+			if (ABuildingBase* Building = Cast<ABuildingBase>(FollowTarget))
+			{
+				if (Building->IsBase)
+				{
+					Unit->Base = Building;
+				}
+			}
+		}
 	}
 
 	if (IsFollowCommandReady(Units))
@@ -924,6 +1011,20 @@ void ACustomControllerBase::Retry_Server_SetUnitsFollowTarget()
 	}
 	AUnitBase* StrongTarget = PendingFollowTarget.Get();
 
+	for (AUnitBase* Unit : StrongUnits)
+	{
+		if (Unit && Unit->IsWorker && StrongTarget)
+		{
+			if (ABuildingBase* Building = Cast<ABuildingBase>(StrongTarget))
+			{
+				if (Building->IsBase)
+				{
+					Unit->Base = Building;
+				}
+			}
+		}
+	}
+
 	if (IsFollowCommandReady(StrongUnits))
 	{
 		ExecuteFollowCommand(StrongUnits, StrongTarget, PendingFollowAttackT);
@@ -954,6 +1055,17 @@ void ACustomControllerBase::ExecuteFollowCommand(const TArray<AUnitBase*>& Units
 	{
 		if (!Unit) continue;
 		Unit->ApplyFollowTarget(FollowTarget);
+
+		if (Unit->IsWorker && FollowTarget)
+		{
+			if (ABuildingBase* Building = Cast<ABuildingBase>(FollowTarget))
+			{
+				if (Building->IsBase)
+				{
+					Unit->Base = Building;
+				}
+			}
+		}
 	}
 
 	if (FollowTarget)
@@ -986,17 +1098,23 @@ void ACustomControllerBase::ExecuteFollowCommand(const TArray<AUnitBase*>& Units
 
 		if (ValidUnits.Num() > 0)
 		{
-			Server_Batch_CorrectSetUnitMoveTargets(GetWorld(), ValidUnits, NewTargetLocations, DesiredSpeeds, 40.0f, AttackT);
+			TArray<float> BatchRadii;
+			for (AUnitBase* Unit : ValidUnits)
+			{
+				BatchRadii.Add(Unit->MovementAcceptanceRadius);
+			}
+			Server_Batch_CorrectSetUnitMoveTargets(GetWorld(), ValidUnits, NewTargetLocations, DesiredSpeeds, BatchRadii, AttackT);
 		}
 	}
 }
 
 bool ACustomControllerBase::TryHandleFollowOnRightClick(const FHitResult& HitPawn)
 {
-	// If we clicked on a friendly unit while having a selection, assign follow and early return
+	// If we clicked on a unit while having a selection, assign follow or attack and early return
 	if (SelectedUnits.Num() > 0 && HitPawn.bBlockingHit)
 	{
 		if (!Cast<AConstructionUnit>(HitPawn.GetActor()))
+		{
 			if (AUnitBase* HitUnit = Cast<AUnitBase>(HitPawn.GetActor()))
 			{
 				const bool bFriendly = (HitUnit->TeamId == SelectableTeamId);
@@ -1005,7 +1123,26 @@ bool ACustomControllerBase::TryHandleFollowOnRightClick(const FHitResult& HitPaw
 					Server_SetUnitsFollowTarget(SelectedUnits, HitUnit);
 					return true;
 				}
+				else
+				{
+					// If it's an enemy unit, issue an attack command (chase/focus logic)
+					TArray<FVector> Locations;
+					for (int32 i = 0; i < SelectedUnits.Num(); ++i)
+					{
+						Locations.Add(HitPawn.Location);
+					}
+					LeftClickAttackMass(SelectedUnits, Locations, false, HitUnit);
+
+					// Play attack sound if available
+					if (AttackSound)
+					{
+						UGameplayStatics::PlaySound2D(this, AttackSound, GetSoundMultiplier());
+					}
+
+					return true;
+				}
 			}
+		}
 	}
 	
 	if (SelectedUnits.Num() > 0)
@@ -1018,6 +1155,12 @@ bool ACustomControllerBase::TryHandleFollowOnRightClick(const FHitResult& HitPaw
 
 void ACustomControllerBase::RightClickPressedMass()
 {
+	if (SwapAttackMove && AttackToggled)
+	{
+		HandleAttackMovePressed();
+		AttackToggled = false;
+		return;
+	}
 	AttackToggled = false;
 
 	FHitResult HitPawn;
@@ -1083,6 +1226,8 @@ void ACustomControllerBase::RightClickPressedMassMinimap(const FVector& GroundLo
 
 void ACustomControllerBase::LeftClickPressedMassMinimapAttack(const FVector& GroundLocation)
 {
+	UNavigationSystemV1* NavSys = UNavigationSystemV1::GetCurrent(GetWorld());
+
 	// Mimic LeftClickPressedMass attack branch using GroundLocation from minimap
 	if (!AttackToggled)
 	{
@@ -1093,8 +1238,20 @@ void ACustomControllerBase::LeftClickPressedMassMinimapAttack(const FVector& Gro
 	int32 NumUnits = SelectedUnits.Num();
 	if (NumUnits == 0) return;
 
-	// 2) precompute grid offsets around GroundLocation
-	TArray<FVector> Offsets = ComputeSlotOffsets(NumUnits);
+	// Consistency: Sort units by radius so that formation validation and assignment match Move logic
+	TArray<AUnitBase*> UnitsToProcess = SelectedUnits;
+	UnitsToProcess.Sort([](const AUnitBase& A, const AUnitBase& B) {
+		float RA = 50.0f;
+		if (A.GetCapsuleComponent()) RA = A.GetCapsuleComponent()->GetScaledCapsuleRadius();
+		float RB = 50.0f;
+		if (B.GetCapsuleComponent()) RB = B.GetCapsuleComponent()->GetScaledCapsuleRadius();
+		return RA > RB;
+	});
+
+	FVector AdjustedLocation = GroundLocation;
+	TArray<FVector> Offsets;
+	float UsedSpacing;
+	ValidateAndAdjustGridLocation(UnitsToProcess, AdjustedLocation, Offsets, UsedSpacing);
 
 	AWaypoint* BWaypoint = nullptr;
 	bool PlayWaypointSound = false;
@@ -1106,10 +1263,10 @@ void ACustomControllerBase::LeftClickPressedMassMinimapAttack(const FVector& Gro
 	TArray<FVector>    BuildingLocs;
 	for (int32 i = 0; i < NumUnits; ++i)
 	{
-		AUnitBase* U = SelectedUnits[i];
+		AUnitBase* U = UnitsToProcess[i];
 		if (U == nullptr || U == CameraUnitWithTag) continue;
 
-		FVector RunLocation = GroundLocation + Offsets[i];
+		FVector RunLocation = AdjustedLocation + Offsets[i];
 
 		bool bNavMod;
 		RunLocation = TraceRunLocation(RunLocation, bNavMod);
@@ -1125,7 +1282,7 @@ void ACustomControllerBase::LeftClickPressedMassMinimapAttack(const FVector& Gro
 		}
 		else
 		{
-			DrawDebugCircleAtLocation(GetWorld(), RunLocation, FColor::Red);
+			DrawCircleAtLocation(GetWorld(), RunLocation, FColor::Red);
 			if (U->bIsMassUnit)
 			{
 				MassUnits.Add(U);
@@ -1171,37 +1328,140 @@ FVector ACustomControllerBase::GetUnitWorldLocation(const AUnitBase* Unit) const
 	return Unit->GetMassActorLocation();
 }
 
-TArray<FVector> ACustomControllerBase::ComputeSlotOffsets(int32 NumUnits) const
+TArray<FVector> ACustomControllerBase::ComputeSlotOffsets(const TArray<AUnitBase*>& Units, float Spacing) const
 {
+    int32 NumUnits = Units.Num();
+    if (NumUnits == 0) return TArray<FVector>();
+
+	float ActualSpacing = (Spacing < 0.f) ? GridSpacing : Spacing;
+
+    // 1. Collect radii for all units
+    TArray<float> Radii;
+    Radii.Reserve(NumUnits);
+    for (const AUnitBase* Unit : Units)
+    {
+        float R = 50.0f; // Default fallback radius
+        if (Unit && Unit->GetCapsuleComponent())
+        {
+            R = Unit->GetCapsuleComponent()->GetScaledCapsuleRadius()*GridCapsuleMultiplier;
+        }
+        Radii.Add(R);
+    }
+
+    // 2. Determine grid dimensions
     int32 GridSize = ComputeGridSize(NumUnits);
-    float Half = (GridSize - 1) * GridSpacing / 2.0f;
-    FVector Center(Half, Half, 0.f);
+    int32 NumRows = FMath::CeilToInt((float)NumUnits / (float)GridSize);
+
+    // 3. Compute max radius per row and column to ensure no overlaps in a non-uniform grid
+    TArray<float> MaxR_Col; MaxR_Col.Init(0.0f, GridSize);
+    TArray<float> MaxR_Row; MaxR_Row.Init(0.0f, NumRows);
+
+    for (int32 i = 0; i < NumUnits; ++i)
+    {
+        int32 Row = i / GridSize;
+        int32 Col = i % GridSize;
+        float R = Radii[i];
+        MaxR_Col[Col] = FMath::Max(MaxR_Col[Col], R);
+        MaxR_Row[Row] = FMath::Max(MaxR_Row[Row], R);
+    }
+
+    // 4. Calculate X and Y positions for each column and row
+    TArray<float> XPositions; XPositions.Init(0.0f, GridSize);
+    TArray<float> YPositions; YPositions.Init(0.0f, NumRows);
+
+    // Start with first column/row at 0. Next positions are previous + radii + spacing
+    for (int32 c = 1; c < GridSize; ++c)
+    {
+        XPositions[c] = XPositions[c - 1] + MaxR_Col[c - 1] + MaxR_Col[c] + ActualSpacing;
+    }
+
+    for (int32 r = 1; r < NumRows; ++r)
+    {
+        YPositions[r] = YPositions[r - 1] + MaxR_Row[r - 1] + MaxR_Row[r] + ActualSpacing;
+    }
+
+    // 5. Center the grid including unit widths
+    float LeftEdge = XPositions[0] - MaxR_Col[0];
+    float RightEdge = XPositions[GridSize - 1] + MaxR_Col[GridSize - 1];
+    float TopEdge = YPositions[0] - MaxR_Row[0];
+    float BottomEdge = YPositions[NumRows - 1] + MaxR_Row[NumRows - 1];
+    FVector TrueCenter((LeftEdge + RightEdge) * 0.5f, (TopEdge + BottomEdge) * 0.5f, 0.0f);
+
+    // 6. Generate offsets
     TArray<FVector> Offsets;
     Offsets.Reserve(NumUnits);
     for (int32 i = 0; i < NumUnits; ++i)
     {
         int32 Row = i / GridSize;
         int32 Col = i % GridSize;
-        Offsets.Add(FVector(Col * GridSpacing, Row * GridSpacing, 0.f) - Center);
+        Offsets.Add(FVector(XPositions[Col], YPositions[Row], 0.f) - TrueCenter);
     }
+
     return Offsets;
 }
 
 TArray<TArray<float>> ACustomControllerBase::BuildCostMatrix(
-    const TArray<FVector>& UnitPositions,
+    const TArray<AUnitBase*>& Units,
     const TArray<FVector>& SlotOffsets,
     const FVector& TargetCenter) const
 {
-    int32 N = UnitPositions.Num();
+    int32 N = Units.Num();
+    if (N == 0) return TArray<TArray<float>>();
+
+    // 1. Collect radii and identify slot capacities
+    TArray<float> Radii;
+    Radii.Reserve(N);
+    for (const AUnitBase* Unit : Units)
+    {
+        float R = 50.0f;
+        if (Unit && Unit->GetCapsuleComponent())
+            R = Unit->GetCapsuleComponent()->GetScaledCapsuleRadius();
+        Radii.Add(R);
+    }
+
+    int32 GridSize = ComputeGridSize(N);
+    int32 NumRows = FMath::CeilToInt((float)N / (float)GridSize);
+
+    TArray<float> MaxR_Col; MaxR_Col.Init(0.0f, GridSize);
+    TArray<float> MaxR_Row; MaxR_Row.Init(0.0f, NumRows);
+
+    for (int32 i = 0; i < N; ++i)
+    {
+        int32 Row = i / GridSize;
+        int32 Col = i % GridSize;
+        float R = Radii[i];
+        MaxR_Col[Col] = FMath::Max(MaxR_Col[Col], R);
+        MaxR_Row[Row] = FMath::Max(MaxR_Row[Row], R);
+    }
+
+    // 2. Build the matrix with penalties
     TArray<TArray<float>> Cost;
     Cost.SetNum(N);
     for (int32 i = 0; i < N; ++i)
     {
+        float UnitR = Radii[i];
+        FVector UnitLoc = GetUnitWorldLocation(Units[i]);
+
         Cost[i].SetNum(N);
         for (int32 j = 0; j < N; ++j)
         {
+            int32 Row = j / GridSize;
+            int32 Col = j % GridSize;
+            float Capacity = FMath::Min(MaxR_Col[Col], MaxR_Row[Row]);
+
             FVector SlotWorld = TargetCenter + SlotOffsets[j];
-            Cost[i][j] = FVector::DistSquared(UnitPositions[i], SlotWorld);
+            float DistSq = FVector::DistSquared(UnitLoc, SlotWorld);
+
+            // If unit is too large for the slot's allocated space, add a massive penalty.
+            // We use a small epsilon for float comparison.
+            if (UnitR > Capacity + 0.1f)
+            {
+                Cost[i][j] = DistSq + 1e10f; 
+            }
+            else
+            {
+                Cost[i][j] = DistSq;
+            }
         }
     }
     return Cost;
@@ -1271,33 +1531,130 @@ bool ACustomControllerBase::ShouldRecalculateFormation() const
     return false;
 }
 
-void ACustomControllerBase::RecalculateFormation(const FVector& TargetCenter)
+void ACustomControllerBase::RecalculateFormation(const FVector& TargetCenter, float Spacing)
 {
     int32 N = SelectedUnits.Num();
+    if (N == 0) return;
     UnitFormationOffsets.Empty();
     LastFormationUnits.Empty();
 
-    auto Offsets = ComputeSlotOffsets(N);
-    TArray<FVector> Positions;
-    Positions.Reserve(N);
-    for (AUnitBase* U : SelectedUnits)
-        Positions.Add(GetUnitWorldLocation(U));
+    // 1. Sort a local copy of units by radius to ensure size-matched formation assignment
+    TArray<AUnitBase*> SortedUnits = SelectedUnits;
+    SortedUnits.Sort([](const AUnitBase& A, const AUnitBase& B) {
+        float RA = 50.0f;
+        if (A.GetCapsuleComponent()) RA = A.GetCapsuleComponent()->GetScaledCapsuleRadius();
+        float RB = 50.0f;
+        if (B.GetCapsuleComponent()) RB = B.GetCapsuleComponent()->GetScaledCapsuleRadius();
+        return RA > RB;
+    });
 
-    auto Cost = BuildCostMatrix(Positions, Offsets, TargetCenter);
+    // 2. Compute non-uniform offsets tailored for these units
+    auto Offsets = ComputeSlotOffsets(SortedUnits, Spacing);
+    
+    // 3. Match units to slots. By including radius info in BuildCostMatrix, we ensure big units get big slots.
+    auto Cost = BuildCostMatrix(SortedUnits, Offsets, TargetCenter);
     auto Assign = SolveHungarian(Cost);
 
     for (int32 i = 0; i < N; ++i)
     {
-        UnitFormationOffsets.Add(SelectedUnits[i], Offsets[Assign[i]]);
-        LastFormationUnits.Add(SelectedUnits[i]);
+        UnitFormationOffsets.Add(SortedUnits[i], Offsets[Assign[i]]);
+        LastFormationUnits.Add(SortedUnits[i]);
     }
     bForceFormationRecalculation = false;
+}
+
+bool ACustomControllerBase::ValidateAndAdjustGridLocation(const TArray<AUnitBase*>& Units, FVector& InOutLocation, TArray<FVector>& OutOffsets, float& OutSpacing)
+{
+    UNavigationSystemV1* NavSys = UNavigationSystemV1::GetCurrent(GetWorld());
+    OutSpacing = GridSpacing;
+    if (!NavSys || Units.Num() == 0) 
+    {
+        OutOffsets = ComputeSlotOffsets(Units, OutSpacing);
+        return true;
+    }
+
+    // 1. Initial wide projection to find the nearest valid ground
+    FNavLocation InitialNavLoc;
+    if (NavSys->ProjectPointToNavigation(InOutLocation, InitialNavLoc, FVector(1500.f, 1500.f, 1500.f)))
+    {
+        InOutLocation = InitialNavLoc.Location;
+    }
+
+    // 2. Consistency: Sort by radius to match RecalculateFormation
+    TArray<AUnitBase*> LocalUnits = Units;
+    LocalUnits.Sort([](const AUnitBase& A, const AUnitBase& B) {
+        float RA = 50.0f;
+        if (A.GetCapsuleComponent()) RA = A.GetCapsuleComponent()->GetScaledCapsuleRadius();
+        float RB = 50.0f;
+        if (B.GetCapsuleComponent()) RB = B.GetCapsuleComponent()->GetScaledCapsuleRadius();
+        return RA > RB;
+    });
+
+    const float SpacingSteps[] = { 1.0f, 0.7f, 0.4f, 0.1f };
+    bool bFinalSuccess = false;
+
+    for (float StepMult : SpacingSteps)
+    {
+        OutSpacing = GridSpacing * StepMult;
+        
+        // Try up to 5 times to shift the grid to a valid location at this spacing
+        for (int32 Try = 0; Try < 5; ++Try)
+        {
+            OutOffsets = ComputeSlotOffsets(LocalUnits, OutSpacing);
+            bool bAllValid = true;
+            FVector FirstFailedPointShift = FVector::ZeroVector;
+
+            for (const FVector& Off : OutOffsets)
+            {
+                FVector TargetP = InOutLocation + Off;
+                FNavLocation NavLoc;
+                if (!NavSys->ProjectPointToNavigation(TargetP, NavLoc, NavMeshProjectionExtent))
+                {
+                    bAllValid = false;
+                    // Find nearest nav location for THIS point to calculate a shift for the whole grid
+                    if (NavSys->ProjectPointToNavigation(TargetP, NavLoc, FVector(1000.f, 1000.f, 1000.f)))
+                    {
+                        FirstFailedPointShift = NavLoc.Location - TargetP;
+                    }
+                    break; 
+                }
+            }
+
+            if (bAllValid)
+            {
+                bFinalSuccess = true;
+                break;
+            }
+
+            // If not all valid, shift InOutLocation based on the first point that failed
+            if (!FirstFailedPointShift.IsNearlyZero())
+            {
+                InOutLocation += FirstFailedPointShift;
+            }
+            else
+            {
+                // Fallback: just project center again with wide extent
+                FNavLocation CenterNav;
+                if (NavSys->ProjectPointToNavigation(InOutLocation, CenterNav, FVector(1000.f, 1000.f, 1000.f)))
+                {
+                    InOutLocation = CenterNav.Location;
+                }
+            }
+        }
+        
+        if (bFinalSuccess) break;
+    }
+
+    // We return true even if it's not perfectly on NavMesh after all attempts, 
+    // to ensure the command is never completely rejected.
+    return true; 
 }
 
 void ACustomControllerBase::SetHoldPositionOnSelectedUnits()
 {
 	for (AUnitBase* U : SelectedUnits)
 	{
+		if (!U) continue;
 		if (!U->bHoldPosition)
 			SetHoldPositionOnUnit(U);
 	}
@@ -1312,20 +1669,30 @@ void ACustomControllerBase::RunUnitsAndSetWaypointsMass(FHitResult Hit)
 {
     // 1. Setup
     if (SelectedUnits.Num() == 0) return;
+
+	UNavigationSystemV1* NavSys = UNavigationSystemV1::GetCurrent(GetWorld());
+	FVector AdjustedLocation = Hit.Location;
+	TArray<FVector> DummyOffsets;
+	float UsedSpacing;
+	
+	ValidateAndAdjustGridLocation(SelectedUnits, AdjustedLocation, DummyOffsets, UsedSpacing);
+
     AWaypoint* BWaypoint = nullptr;
     bool PlayWaypoint = false, PlayRun = false;
 
     // 2. Formation check
-    if (ShouldRecalculateFormation())
+    // We recalculate if selection changed OR if the target location was adjusted significantly
+    if (ShouldRecalculateFormation() || !AdjustedLocation.Equals(Hit.Location, 1.0f))
     {
-        //UE_LOG(LogTemp, Warning, TEXT("Recalculating formation..."));
-        RecalculateFormation(Hit.Location);
+        RecalculateFormation(AdjustedLocation, UsedSpacing);
     }
 
     // 3. Assign final positions
     TMap<AUnitBase*, FVector> Finals;
     for (AUnitBase* U : SelectedUnits)
     {
+    	if (!U) continue;
+    	
 		bool UnitIsValid = true;
     	
     	if (!U->IsInitialized) UnitIsValid = false;
@@ -1347,7 +1714,7 @@ void ACustomControllerBase::RunUnitsAndSetWaypointsMass(FHitResult Hit)
     	if (UnitIsValid)
     	{
     		FVector Off = UnitFormationOffsets.FindRef(U);
-    		Finals.Add(U, Hit.Location + Off);
+    		Finals.Add(U, AdjustedLocation + Off);
     	}
     }
 
@@ -1369,6 +1736,8 @@ void ACustomControllerBase::RunUnitsAndSetWaypointsMass(FHitResult Hit)
         if (bNavMod) continue;
 
         U->RemoveFocusEntityTarget();
+        U->SetRdyForTransport(false);
+        U->TransportId = 0;
         float Speed = U->Attributes->GetBaseRunSpeed();
         bool bSuccess = false;
         SetBuildingWaypoint(Loc, U, BWaypoint, PlayWaypoint, bSuccess);
@@ -1425,7 +1794,12 @@ void ACustomControllerBase::RunUnitsAndSetWaypointsMass(FHitResult Hit)
 
     if (BatchUnits.Num() > 0)
     {
-    	Server_Batch_CorrectSetUnitMoveTargets(GetWorld(), BatchUnits, BatchLocs, BatchSpeeds, 40.f, false);
+    	TArray<float> BatchRadii;
+    	for (AUnitBase* Unit : BatchUnits)
+    	{
+    		BatchRadii.Add(Unit->MovementAcceptanceRadius);
+    	}
+    	Server_Batch_CorrectSetUnitMoveTargets(GetWorld(), BatchUnits, BatchLocs, BatchSpeeds, BatchRadii, false);
     }
 
     if (WaypointSound && PlayWaypoint)
@@ -1503,6 +1877,8 @@ void ACustomControllerBase::LeftClickPressedMass()
 
     if (!CameraBase || CameraBase->TabToggled) return;
 
+	if (SwapAttackMove) AttackToggled = false;
+	
     // --- ALT: cancel / destroy area ---
 	if (AltIsPressed)
     {
@@ -1525,93 +1901,11 @@ void ACustomControllerBase::LeftClickPressedMass()
 		bIsAwaitingAttackGroundTarget = false;
 		return;
 	}
-    else if (AttackToggled)
-    {
-        // 1) get world hit under cursor for ground and pawn
-        FHitResult Hit;
-        GetHitResultUnderCursor(ECollisionChannel::ECC_Visibility, false, Hit);
-        FHitResult HitPawn;
-        GetHitResultUnderCursor(ECollisionChannel::ECC_Pawn, false, HitPawn);
-        AActor* CursorHitActor = HitPawn.bBlockingHit ? HitPawn.GetActor() : nullptr;
-
-        int32 NumUnits = SelectedUnits.Num();
-        if (NumUnits == 0) return;
-
-        // 2) precompute grid offsets
-        TArray<FVector> Offsets = ComputeSlotOffsets(NumUnits);
-
-        AWaypoint* BWaypoint = nullptr;
-        bool PlayWaypointSound = false;
-        bool PlayAttackSound   = false;
-
-        // 3) issue each unit (collect arrays for mass units)
-        TArray<AUnitBase*> MassUnits;
-        TArray<FVector>    MassLocations;
-        TArray<AUnitBase*> BuildingUnits;
-        TArray<FVector>    BuildingLocs;
-        for (int32 i = 0; i < NumUnits; ++i)
-        {
-            AUnitBase* U = SelectedUnits[i];
-            if (U == nullptr || U == CameraUnitWithTag) continue;
-        
-            // apply the same slot-by-index approach
-            FVector RunLocation = Hit.Location + Offsets[i];
-
-            bool bNavMod;
-            RunLocation = TraceRunLocation(RunLocation, bNavMod);
-            if (bNavMod) continue;
-        
-            bool bSuccess = false;
-            SetBuildingWaypoint(RunLocation, U, BWaypoint, PlayWaypointSound, bSuccess);
-            if (bSuccess)
-            {
-                // waypoint placed
-                BuildingUnits.Add(U);
-                BuildingLocs.Add(RunLocation);
-            }
-            else
-            {
-                DrawDebugCircleAtLocation(GetWorld(), RunLocation, FColor::Red);
-                if (U->bIsMassUnit)
-                {
-                    MassUnits.Add(U);
-                    MassLocations.Add(RunLocation);
-                }
-                else
-                {
-                    LeftClickAttack(U, RunLocation);
-                }
-
-                PlayAttackSound = true;
-            }
-
-            // still fire any dragged ability on each unit
-            FireAbilityMouseHit(U, Hit);
-        }
-
-        if (BuildingUnits.Num() > 0)
-        {
-            Server_Batch_SetBuildingWaypoints(BuildingLocs, BuildingUnits);
-        }
-
-        if (MassUnits.Num() > 0)
-        {
-            LeftClickAttackMass(MassUnits, MassLocations, AttackToggled, CursorHitActor);
-        }
-
-        AttackToggled = false;
-
-        // 4) play sounds
-        if (WaypointSound && PlayWaypointSound)
-        {
-            UGameplayStatics::PlaySound2D(this, WaypointSound, GetSoundMultiplier());
-        }
-        if (AttackSound && PlayAttackSound)
-        {
-            UGameplayStatics::PlaySound2D(this, AttackSound, GetSoundMultiplier());
-        }
+	else if (AttackToggled && !SwapAttackMove)
+	{
+        HandleAttackMovePressed();
     }
-    else
+    else if (AttackToggled)
     {
         FHitResult HitPawn;
         GetHitResultUnderCursor(ECollisionChannel::ECC_Pawn, false, HitPawn);
@@ -1661,9 +1955,9 @@ void ACustomControllerBase::Server_HandleAbilityUnderCursor_Implementation(const
         Units[0]->CurrentDraggedWorkArea->SetActorTransform(ClientWorkAreaTransform);
     }
     // Try to drop any active work area for the first unit using the new parameterized variant
-    if (Units.Num() > 0 && Units[0])
+    if (Units.Num() > 0 && Units[0] && Units[0]->CurrentDraggedWorkArea)
     {
-        DropWorkAreaForUnit(Units[0], bWorkAreaIsSnapped, InDropWorkAreaFailedSound);
+        if (!Units[0]->CurrentDraggedWorkArea->InstantDrop) DropWorkAreaForUnit(Units[0], bWorkAreaIsSnapped, InDropWorkAreaFailedSound);
     }
 
     bool AbilityFired = false;
@@ -1786,6 +2080,8 @@ void ACustomControllerBase::LeftClickAttackMass_Implementation(const TArray<AUni
 
 			Unit->UnitToChase = TargetUnitBase;
 			Unit->FocusEntityTarget(TargetUnitBase);
+			Unit->SetRdyForTransport(false);
+			// Unit->TransportId = 0;
 			SetUnitState_Replication(Unit, 3);
 			Unit->SwitchEntityTagByState(UnitData::Chase, Unit->UnitStatePlaceholder);
 		}
@@ -1844,6 +2140,8 @@ void ACustomControllerBase::LeftClickAMoveUEPFMass_Implementation(const TArray<A
 
 		float Speed = Unit->Attributes->GetBaseRunSpeed();
 		SetUnitState_Replication(Unit, 1);
+		Unit->SetRdyForTransport(false);
+		Unit->TransportId = 0;
 
 		if (Unit->bIsMassUnit)
 		{
@@ -1859,7 +2157,12 @@ void ACustomControllerBase::LeftClickAMoveUEPFMass_Implementation(const TArray<A
 
 	if (BatchUnits.Num() > 0)
 	{
-  Server_Batch_CorrectSetUnitMoveTargets(GetWorld(), BatchUnits, BatchLocations, BatchSpeeds, 40.f, AttackT);
+		TArray<float> BatchRadii;
+		for (AUnitBase* Unit : BatchUnits)
+		{
+			BatchRadii.Add(Unit->MovementAcceptanceRadius);
+		}
+		Server_Batch_CorrectSetUnitMoveTargets(GetWorld(), BatchUnits, BatchLocations, BatchSpeeds, BatchRadii, AttackT);
 	}
 }
 
@@ -2200,6 +2503,119 @@ void ACustomControllerBase::Server_SetPendingTeam_Implementation(int32 TeamId)
 	}
 }
 
+void ACustomControllerBase::HandleAttackMovePressed()
+{
+    // 1) get world hit under cursor for ground and pawn
+    	
+    FHitResult HitPawn;
+    GetHitResultUnderCursor(ECollisionChannel::ECC_Pawn, false, HitPawn);
+    AActor* CursorHitActor = HitPawn.bBlockingHit ? HitPawn.GetActor() : nullptr;
+
+
+    	
+    FHitResult Hit;
+    GetHitResultUnderCursor(ECollisionChannel::ECC_Visibility, false, Hit);
+
+    int32 NumUnits = SelectedUnits.Num();
+    if (NumUnits == 0) return;
+
+    // Consistency: Sort units by radius so that formation validation and assignment match Move logic
+    TArray<AUnitBase*> UnitsToProcess = SelectedUnits;
+    UnitsToProcess.Sort([](const AUnitBase& A, const AUnitBase& B) {
+        float RA = 50.0f;
+        if (A.GetCapsuleComponent()) RA = A.GetCapsuleComponent()->GetScaledCapsuleRadius();
+        float RB = 50.0f;
+        if (B.GetCapsuleComponent()) RB = B.GetCapsuleComponent()->GetScaledCapsuleRadius();
+        return RA > RB;
+    });
+
+    FVector AdjustedLocation = Hit.Location;
+    TArray<FVector> Offsets;
+    float UsedSpacing;
+        
+    // If we are not clicking directly on a pawn, validate and adjust the grid on the NavMesh
+    if (!HitPawn.bBlockingHit)
+    {
+        ValidateAndAdjustGridLocation(UnitsToProcess, AdjustedLocation, Offsets, UsedSpacing);
+    }
+    else
+    {
+        UsedSpacing = GridSpacing;
+        Offsets = ComputeSlotOffsets(UnitsToProcess, UsedSpacing);
+    }
+
+    AWaypoint* BWaypoint = nullptr;
+    bool PlayWaypointSound = false;
+    bool PlayAttackSound   = false;
+
+    // 3) issue each unit (collect arrays for mass units)
+    TArray<AUnitBase*> MassUnits;
+    TArray<FVector>    MassLocations;
+    TArray<AUnitBase*> BuildingUnits;
+    TArray<FVector>    BuildingLocs;
+    for (int32 i = 0; i < NumUnits; ++i)
+    {
+        AUnitBase* U = UnitsToProcess[i];
+        if (U == nullptr || U == CameraUnitWithTag) continue;
+        
+        // apply the same slot-by-index approach
+        FVector RunLocation = AdjustedLocation + Offsets[i];
+
+        bool bNavMod;
+        RunLocation = TraceRunLocation(RunLocation, bNavMod);
+        if (bNavMod) continue;
+        
+        bool bSuccess = false;
+        SetBuildingWaypoint(RunLocation, U, BWaypoint, PlayWaypointSound, bSuccess);
+        if (bSuccess)
+        {
+            // waypoint placed
+            BuildingUnits.Add(U);
+            BuildingLocs.Add(RunLocation);
+        }
+        else
+        {
+            DrawCircleAtLocation(GetWorld(), RunLocation, FColor::Red);
+            if (U->bIsMassUnit)
+            {
+                MassUnits.Add(U);
+                MassLocations.Add(RunLocation);
+            }
+            else
+            {
+                LeftClickAttack(U, RunLocation);
+            }
+
+            PlayAttackSound = true;
+        }
+
+        // still fire any dragged ability on each unit
+        FireAbilityMouseHit(U, Hit);
+    }
+
+    if (BuildingUnits.Num() > 0)
+    {
+        Server_Batch_SetBuildingWaypoints(BuildingLocs, BuildingUnits);
+    }
+
+    if (MassUnits.Num() > 0)
+    {
+        LeftClickAttackMass(MassUnits, MassLocations, AttackToggled, CursorHitActor);
+    }
+
+    AttackToggled = false;
+
+    // 4) play sounds
+    if (WaypointSound && PlayWaypointSound)
+    {
+        UGameplayStatics::PlaySound2D(this, WaypointSound, GetSoundMultiplier());
+    }
+    if (AttackSound && PlayAttackSound)
+    {
+        UGameplayStatics::PlaySound2D(this, AttackSound, GetSoundMultiplier());
+    }
+}
+
 // === Client mirror helpers ===
 
 void ACustomControllerBase::SetStanceOnSelectedUnits(uint8 NewStance)
@@ -2257,6 +2673,40 @@ void ACustomControllerBase::SetAttackGroundLocationOnSelectedUnits(const FVector
 		if (Unit)
 		{
 			Server_SetAttackGroundLocation(Unit, Location);
+		}
+	}
+}
+
+void ACustomControllerBase::ShowFriendlyHealthbars()
+{
+	TArray<AUnitBase*> UnitsToShow;
+	for (TActorIterator<AUnitBase> It(GetWorld()); It; ++It)
+	{
+		AUnitBase* Unit = *It;
+		if (Unit && Unit->TeamId == SelectableTeamId && Unit->IsOnViewport)
+		{
+			if (Unit->Attributes && (Unit->Attributes->GetHealth() < Unit->Attributes->GetMaxHealth() || 
+				Unit->Attributes->GetShield() < Unit->Attributes->GetMaxShield()))
+			{
+				UnitsToShow.Add(Unit);
+			}
+		}
+	}
+	if (UnitsToShow.Num() > 0)
+	{
+		Server_ShowFriendlyHealthbars(UnitsToShow);
+	}
+}
+
+void ACustomControllerBase::Server_ShowFriendlyHealthbars_Implementation(const TArray<AUnitBase*>& Units)
+{
+	for (AUnitBase* Unit : Units)
+	{
+		if (Unit)
+		{
+			Unit->OpenHealthWidget = true;
+			Unit->bShowLevelOnly = false;
+			GetWorld()->GetTimerManager().SetTimer(Unit->HealthWidgetTimerHandle, Unit, &ALevelUnit::HideHealthWidget, Unit->HealthWidgetDisplayDuration, false);
 		}
 	}
 }
@@ -2322,3 +2772,67 @@ void ACustomControllerBase::Server_DestroyUnit_Implementation(AUnitBase* Unit)
 	}
 	Unit->SetUnitState(UnitData::Dead);
 }
+
+void ACustomControllerBase::Client_InitializeMainHUD_Implementation()
+{
+	if (!IsLocalController()) return;
+
+	if (MainHUDs.Num() > 0)
+	{
+		TSubclassOf<UUserWidget> HUDClass = nullptr;
+		if (MainHUDs.IsValidIndex(SelectableTeamId) && MainHUDs[SelectableTeamId])
+		{
+			HUDClass = MainHUDs[SelectableTeamId];
+		}
+		else if (MainHUDs[0])
+		{
+			HUDClass = MainHUDs[0];
+		}
+
+		if (HUDClass)
+		{
+			MainHUDInstance = CreateWidget<UUserWidget>(this, HUDClass);
+			if (MainHUDInstance)
+			{
+				MainHUDInstance->AddToViewport();
+			}
+		}
+	}
+
+	MainHUDRetryCount = 0;
+	GetWorldTimerManager().SetTimer(MainHUDRetryTimerHandle, this, &ACustomControllerBase::Retry_InitializeMainHUD, 0.5f, true);
+}
+
+void ACustomControllerBase::Retry_InitializeMainHUD()
+{
+	AExtendedCameraBase* Camera = Cast<AExtendedCameraBase>(GetPawn());
+	if (Camera)
+	{
+		bool bAllSuccess = true;
+		bAllSuccess &= Camera->InitUnitSelectorWidgetController(this);
+		bAllSuccess &= Camera->InitTaggedSelectorWidgetController(this);
+		bAllSuccess &= Camera->InitAbiltiyChooserWidgetController(this);
+		bAllSuccess &= Camera->InitializeWinConditionDisplay();
+		bAllSuccess &= Camera->SetupResourceWidget(this);
+
+		if (bAllSuccess)
+		{
+			Camera->TabMode = 1;
+			Camera->UpdateTabModeUI();
+			GetWorldTimerManager().ClearTimer(MainHUDRetryTimerHandle);
+			return;
+		}
+	}
+
+	MainHUDRetryCount++;
+	if (MainHUDRetryCount >= 5)
+	{
+		if (Camera)
+		{
+			Camera->TabMode = 1;
+			Camera->UpdateTabModeUI();
+		}
+		GetWorldTimerManager().ClearTimer(MainHUDRetryTimerHandle);
+	}
+}
+

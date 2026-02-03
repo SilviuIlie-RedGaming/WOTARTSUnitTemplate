@@ -8,6 +8,8 @@
 #include "Actors/StoryTriggerActor.h"
 #include "Components/StoryTriggerComponent.h"
 #include "Sound/SoundClass.h"
+#include "Characters/Camera/ExtendedCameraBase.h"
+#include "Blueprint/UserWidget.h"
 
 UStoryTriggerQueueSubsystem::UStoryTriggerQueueSubsystem()
 {
@@ -16,6 +18,10 @@ UStoryTriggerQueueSubsystem::UStoryTriggerQueueSubsystem()
 void UStoryTriggerQueueSubsystem::Deinitialize()
 {
 	ClearActive();
+	if (UWorld* World = GetWorld())
+	{
+		World->GetTimerManager().ClearTimer(NextStoryTimerHandle);
+	}
 	Pending.Empty();
 	Super::Deinitialize();
 }
@@ -75,7 +81,7 @@ void UStoryTriggerQueueSubsystem::ClearActive()
 
 	if (ActiveWidget)
 	{
-		ActiveWidget->RemoveFromParent();
+		ActiveWidget->SetVisibility(ESlateVisibility::Collapsed);
 		ActiveWidget = nullptr;
 	}
 }
@@ -86,6 +92,18 @@ void UStoryTriggerQueueSubsystem::TryPlayNext()
 	{
 		return; // Already showing something
 	}
+
+	UWorld* World = GetWorld();
+	if (!World)
+	{
+		return;
+	}
+
+	if (World->GetTimerManager().IsTimerActive(NextStoryTimerHandle))
+	{
+		return; // Waiting for delay
+	}
+
 	if (Pending.Num() == 0)
 	{
 		return;
@@ -100,12 +118,6 @@ void UStoryTriggerQueueSubsystem::TryPlayNext()
 	if (!Item.WidgetClass)
 	{
 		Item.WidgetClass = UStoryWidgetBase::StaticClass();
-	}
-
-	UWorld* World = GetWorld();
-	if (!World)
-	{
-		return;
 	}
 
 	bIsStoryActive = true;
@@ -131,7 +143,30 @@ void UStoryTriggerQueueSubsystem::TryPlayNext()
 		return;
 	}
 
-	UStoryWidgetBase* Widget = CreateWidget<UStoryWidgetBase>(PC, Item.WidgetClass);
+	UStoryWidgetBase* Widget = nullptr;
+	if (AExtendedCameraBase* Cam = Cast<AExtendedCameraBase>(PC->GetPawn()))
+	{
+		if (Cam->StoryWidget)
+		{
+			Widget = Cam->StoryWidget;
+		}
+	}
+
+	if (!Widget)
+	{
+		Widget = CreateWidget<UStoryWidgetBase>(PC, Item.WidgetClass);
+		if (Widget)
+		{
+			Widget->AddToViewport();
+			Widget->SetAlignmentInViewport(FVector2D(0.5f, 0.5f));
+
+			int32 SizeX = 0, SizeY = 0;
+			PC->GetViewportSize(SizeX, SizeY);
+			const FVector2D CenterPos(0.5f * SizeX, 0.5f * SizeY);
+			Widget->SetPositionInViewport(CenterPos, false);
+		}
+	}
+
 	if (!Widget)
 	{
 		TryPlayNext();
@@ -150,13 +185,7 @@ void UStoryTriggerQueueSubsystem::TryPlayNext()
 		ResolvedTexture = Item.ImageSoft.LoadSynchronous();
 	}
 
-	int32 SizeX = 0, SizeY = 0;
-	PC->GetViewportSize(SizeX, SizeY);
-	const FVector2D CenterPos(0.5f * SizeX + Item.OffsetX, 0.5f * SizeY + Item.OffsetY);
-
-	Widget->AddToViewport();
-	Widget->SetAlignmentInViewport(FVector2D(0.5f, 0.5f));
-	Widget->SetPositionInViewport(CenterPos, false);
+	Widget->SetVisibility(ESlateVisibility::Visible);
 	Widget->StartStory(Item.Text, ResolvedTexture, ResolvedMaterial);
 
 	if (Item.Sound)
@@ -175,6 +204,10 @@ void UStoryTriggerQueueSubsystem::TryPlayNext()
 void UStoryTriggerQueueSubsystem::OnActiveLifetimeFinished()
 {
 	ClearActive();
-	// Proceed to next item
-	TryPlayNext();
+
+	// Add 3s delay before proceeding to next item
+	if (UWorld* World = GetWorld())
+	{
+		World->GetTimerManager().SetTimer(NextStoryTimerHandle, this, &UStoryTriggerQueueSubsystem::TryPlayNext, 3.0f, false);
+	}
 }

@@ -20,6 +20,7 @@
 
 AResourceGameMode::AResourceGameMode()
 {
+	ResourceDistanceMultiplier = 2.0f;
 	AResourceGameState* RGState = GetGameState<AResourceGameState>();
 	if (RGState)
 	{
@@ -40,9 +41,6 @@ void AResourceGameMode::BeginPlay()
 		RGState->SetTeamResources(TeamResources); 
 	}
 	//AssignWorkAreasToWorkers();
-
-	FTimerHandle WinLoseTimerHandle;
-	GetWorldTimerManager().SetTimer(WinLoseTimerHandle, this, &AResourceGameMode::CheckWinLoseConditionTimer, 1.0f, true);
 }
 
 void AResourceGameMode::CheckWinLoseConditionTimer()
@@ -52,69 +50,7 @@ void AResourceGameMode::CheckWinLoseConditionTimer()
 
 void AResourceGameMode::CheckWinLoseCondition(AUnitBase* DestroyedUnit)
 {
-	if (GetWorld()->GetTimeSeconds() < (float)GatherControllerTimer + 5.f) return;
-	if (bWinLoseTriggered) return;
 	Super::CheckWinLoseCondition(DestroyedUnit);
-	if (bWinLoseTriggered) return;
-
-	if (!WinLoseConfigActor || WinLoseConfigActor->WinLoseCondition != EWinLoseCondition::TeamReachedResourceCount) return;
-
-	int32 TargetTeamId = WinLoseConfigActor->TeamId;
-	const FBuildingCost& TargetResources = WinLoseConfigActor->TargetResourceCount;
-
-	bool bReached = true;
-	if (GetResource(TargetTeamId, EResourceType::Primary) < TargetResources.PrimaryCost) bReached = false;
-	if (GetResource(TargetTeamId, EResourceType::Secondary) < TargetResources.SecondaryCost) bReached = false;
-	if (GetResource(TargetTeamId, EResourceType::Tertiary) < TargetResources.TertiaryCost) bReached = false;
-	if (GetResource(TargetTeamId, EResourceType::Rare) < TargetResources.RareCost) bReached = false;
-	if (GetResource(TargetTeamId, EResourceType::Epic) < TargetResources.EpicCost) bReached = false;
-	if (GetResource(TargetTeamId, EResourceType::Legendary) < TargetResources.LegendaryCost) bReached = false;
-
-	if (bReached)
-	{
-		bWinLoseTriggered = true;
-		FString TargetMapName = WinLoseConfigActor->WinLoseTargetMapName.ToSoftObjectPath().GetLongPackageName();
-
-		if (UGameInstance* GI = GetGameInstance())
-		{
-			if (UMapSwitchSubsystem* MapSwitchSub = GI->GetSubsystem<UMapSwitchSubsystem>())
-			{
-				if (WinLoseConfigActor->DestinationSwitchTagToEnable != NAME_None && !TargetMapName.IsEmpty())
-				{
-					MapSwitchSub->MarkSwitchEnabledForMap(TargetMapName, WinLoseConfigActor->DestinationSwitchTagToEnable);
-				}
-			}
-		}
-
-		bool bAnyWon = false;
-		bool bAnyLost = false;
-
-		for (FConstControllerIterator It = GetWorld()->GetControllerIterator(); It; ++It)
-		{
-			ACameraControllerBase* PC = Cast<ACameraControllerBase>(It->Get());
-			if (!PC) continue;
-
-			int32 PlayerTeamId = PC->SelectableTeamId;
-
-			bool bWon = (PlayerTeamId == TargetTeamId);
-			if (bWon) bAnyWon = true; else bAnyLost = true;
-
-			TWeakObjectPtr<ACameraControllerBase> WeakPC = PC;
-			TSubclassOf<UWinLoseWidget> WidgetClass = WinLoseConfigActor->WinLoseWidgetClass;
-			FName Tag = WinLoseConfigActor->DestinationSwitchTagToEnable;
-
-			GetWorldTimerManager().SetTimer(PC->WinLoseTimerHandle, [WeakPC, bWon, WidgetClass, TargetMapName, Tag]()
-			{
-				if (ACameraControllerBase* StrongPC = WeakPC.Get())
-				{
-					StrongPC->Client_TriggerWinLoseUI(bWon, WidgetClass, TargetMapName, Tag);
-				}
-			}, bWon ? WinLoseConfigActor->WinDelay : WinLoseConfigActor->LoseDelay, false);
-		}
-
-		if (bAnyWon) WinLoseConfigActor->OnYouWonTheGame.Broadcast();
-		if (bAnyLost) WinLoseConfigActor->OnYouLostTheGame.Broadcast();
-	}
 }
 
 void AResourceGameMode::GetLifetimeReplicatedProps(TArray< FLifetimeProperty >& OutLifetimeProps) const
@@ -332,7 +268,7 @@ bool AResourceGameMode::CanAffordConstruction(const FBuildingCost& ConstructionC
 		// Check if the team has enough resources of the current type
 		if (Costs.Contains(ResourceArray.ResourceType) && Costs[ResourceArray.ResourceType] > 0.f)
 		{
-			bool bIsSupply = SupplyLikeResources.Contains(ResourceArray.ResourceType) ? SupplyLikeResources[ResourceArray.ResourceType] : false;
+			bool bIsSupply = SupplyLikeResources.FindRef(ResourceArray.ResourceType);
 			if (bIsSupply)
 			{
 				if (ResourceAmount + Costs[ResourceArray.ResourceType] > ResourceArray.MaxResources[TeamId])
@@ -351,30 +287,106 @@ bool AResourceGameMode::CanAffordConstruction(const FBuildingCost& ConstructionC
 	return true;
 }
 
+bool AResourceGameMode::CanAffordResource(EResourceType ResourceType, float Amount, int32 TeamId) const
+{
+	if (TeamId < 0 || TeamId >= NumberOfTeams)
+		return false;
+
+	for (const FResourceArray& ResourceArray : TeamResources)
+	{
+		if (ResourceArray.ResourceType == ResourceType)
+		{
+			if (!ResourceArray.Resources.IsValidIndex(TeamId))
+				return false;
+
+			float ResourceAmount = ResourceArray.Resources[TeamId];
+			bool bIsSupply = SupplyLikeResources.FindRef(ResourceType);
+
+			if (bIsSupply)
+			{
+				// For supply-like resources, check if adding the amount exceeds max capacity
+				return (ResourceAmount + Amount <= ResourceArray.MaxResources[TeamId]);
+			}
+			else
+			{
+				// For standard resources, check if the current amount is sufficient
+				return (ResourceAmount >= Amount);
+			}
+		}
+	}
+	return false;
+}
+
+bool AResourceGameMode::CanAffordConstructionExtended(const FBuildingCost& ConstructionCost, int32 TeamId, TArray<EResourceType>& OutMissingResources) const
+{
+	OutMissingResources.Empty();
+
+	if (TeamResources.Num() == 0 || TeamId < 0 || TeamId >= NumberOfTeams)
+		return false;
+
+	// Map the FBuildingCost members to EResourceType for easier iteration
+	TMap<EResourceType, int32> Costs;
+	Costs.Add(EResourceType::Primary, ConstructionCost.PrimaryCost);
+	Costs.Add(EResourceType::Secondary, ConstructionCost.SecondaryCost);
+	Costs.Add(EResourceType::Tertiary, ConstructionCost.TertiaryCost);
+	Costs.Add(EResourceType::Rare, ConstructionCost.RareCost);
+	Costs.Add(EResourceType::Epic, ConstructionCost.EpicCost);
+	Costs.Add(EResourceType::Legendary, ConstructionCost.LegendaryCost);
+
+	for (const FResourceArray& ResourceArray : TeamResources)
+	{
+		if (!ResourceArray.Resources.IsValidIndex(TeamId))
+			continue;
+
+		float ResourceAmount = ResourceArray.Resources[TeamId];
+		EResourceType RType = ResourceArray.ResourceType;
+
+		if (Costs.Contains(RType) && Costs[RType] > 0)
+		{
+			bool bIsSupply = SupplyLikeResources.FindRef(RType);
+			bool bAffordable = true;
+
+			if (bIsSupply)
+			{
+				if (ResourceAmount + Costs[RType] > ResourceArray.MaxResources[TeamId])
+				{
+					bAffordable = false;
+				}
+			}
+			else if (ResourceAmount < Costs[RType])
+			{
+				bAffordable = false;
+			}
+
+			if (!bAffordable)
+			{
+				OutMissingResources.Add(RType);
+			}
+		}
+	}
+
+	// Returns true if no resources were missing
+	return OutMissingResources.Num() == 0;
+}
+
 void AResourceGameMode::AssignWorkAreasToWorkers()
 {
-	TArray<AWorkingUnitBase*> AllWorkers;
 	TArray<AActor*> TempActors;
 	UGameplayStatics::GetAllActorsOfClass(GetWorld(), AWorkingUnitBase::StaticClass(), TempActors);
 	
-	// Correctly use GetWorld()->GetAllActorsOfClass
-
-	
+	// Use the improved AssignWorkAreasToWorker function for each worker
+	// This ensures proper distribution with DistanceThresholdMultiplier and even worker distribution
 	for (AActor* MyActor : TempActors)
 	{
 		AWorkingUnitBase* Worker = Cast<AWorkingUnitBase>(MyActor);
 		
-		if (!Worker) continue;
+		if (!Worker || !Worker->IsWorker) continue;
 
-		// Assign the closest base
-		Worker->Base = GetClosestBaseFromArray(Worker, WorkAreaGroups.BaseAreas);
-
-		// Assign one of the five closest resource places randomly
-		TArray<AWorkArea*> WorkPlaces = GetFiveClosestResourcePlaces(Worker);
-		AWorkArea* WorkPlace = GetRandomClosestWorkArea(WorkPlaces);
-		//AddCurrentWorkersForResourceType(Worker->TeamId, ConvertToResourceType(WorkPlace->Type), +1.0f);
-		Worker->ResourcePlace = WorkPlace;
-		//SetAllCurrentWorkers(Worker->TeamId);
+		// Use the single worker assignment function which handles:
+		// - DistanceThresholdMultiplier threshold from base
+		// - Worker distribution constraints (TeamResources)
+		// - Even distribution based on worker count at each location
+		AssignWorkAreasToWorker(Worker);
 	}
 }
 
@@ -386,10 +398,113 @@ void AResourceGameMode::AssignWorkAreasToWorker(AWorkingUnitBase* Worker)
 	// Assign the closest base
 	Worker->Base = GetClosestBaseFromArray(Worker, WorkAreaGroups.BaseAreas);
 
-	// Assign one of the five closest resource places randomly
+	// Get the closest resource places (sorted by distance to base)
 	TArray<AWorkArea*> WorkPlaces = GetFiveClosestResourcePlaces(Worker);
-	AWorkArea* WorkPlace = GetRandomClosestWorkArea(WorkPlaces);
-	Worker->ResourcePlace = WorkPlace;
+	
+	if (WorkPlaces.Num() == 0)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("No resource places available for Worker: %s"), *Worker->GetName());
+		return;
+	}
+	
+	// Check if worker distribution is set for this team
+	const bool bWorkerDistributionSet = IsWorkerDistributionSet(Worker->TeamId);
+	
+	// Filter work places based on worker distribution settings and find the one with fewest workers
+	AWorkArea* BestWorkPlace = nullptr;
+	int32 LowestWorkerCount = INT_MAX;
+	
+	// Get the closest resource's distance as reference for threshold
+	const FVector ReferenceLocation = (Worker->Base && IsValid(Worker->Base)) 
+		? Worker->Base->GetActorLocation() 
+		: Worker->GetActorLocation();
+	
+	const float ClosestDistance = WorkPlaces.Num() > 0 
+		? FVector::Dist(ReferenceLocation, WorkPlaces[0]->GetActorLocation()) 
+		: 0.f;
+	const float DistanceThreshold = ClosestDistance * ResourceDistanceMultiplier;
+	
+	for (AWorkArea* WorkPlace : WorkPlaces)
+	{
+		if (!IsValid(WorkPlace))
+		{
+			continue;
+		}
+		
+		// Only consider work places within multiplier distance of the closest one
+		const float WorkPlaceDistance = FVector::Dist(ReferenceLocation, WorkPlace->GetActorLocation());
+		if (WorkPlaceDistance > DistanceThreshold)
+		{
+			continue;
+		}
+		
+		// Check worker distribution constraints if set
+		if (bWorkerDistributionSet)
+		{
+			const EResourceType ResourceType = ConvertToResourceType(WorkPlace->Type);
+			const int32 CurrentWorkers = GetCurrentWorkersForResourceType(Worker->TeamId, ResourceType);
+			const int32 MaxWorkers = GetMaxWorkersForResourceType(Worker->TeamId, ResourceType);
+			
+			// Skip if this resource type has reached its worker limit
+			if (CurrentWorkers >= MaxWorkers)
+			{
+				continue;
+			}
+		}
+		
+		// Prefer work places with fewer workers for even distribution
+		const int32 WorkerCount = WorkPlace->Workers.Num();
+		if (WorkerCount < LowestWorkerCount)
+		{
+			LowestWorkerCount = WorkerCount;
+			BestWorkPlace = WorkPlace;
+		}
+	}
+	
+	// Fallback: if no suitable place found with distribution constraints, try without constraints
+	if (!BestWorkPlace && bWorkerDistributionSet)
+	{
+		for (AWorkArea* WorkPlace : WorkPlaces)
+		{
+			if (!IsValid(WorkPlace))
+			{
+				continue;
+			}
+			
+			const float WorkPlaceDistance = FVector::Dist(ReferenceLocation, WorkPlace->GetActorLocation());
+			if (WorkPlaceDistance > DistanceThreshold)
+			{
+				continue;
+			}
+			
+			const int32 WorkerCount = WorkPlace->Workers.Num();
+			if (WorkerCount < LowestWorkerCount)
+			{
+				LowestWorkerCount = WorkerCount;
+				BestWorkPlace = WorkPlace;
+			}
+		}
+	}
+	
+	// Final fallback: just pick the closest one
+	if (!BestWorkPlace && WorkPlaces.Num() > 0)
+	{
+		BestWorkPlace = WorkPlaces[0];
+	}
+	
+	Worker->ResourcePlace = BestWorkPlace;
+
+	if (Worker->ResourcePlace)
+	{
+		// Update the CurrentWorkers count for the assigned resource type
+		// This ensures proper distribution when multiple workers are assigned in sequence
+		const EResourceType AssignedResourceType = ConvertToResourceType(Worker->ResourcePlace->Type);
+		AddCurrentWorkersForResourceType(Worker->TeamId, AssignedResourceType, +1.0f);
+		
+		// Add worker to the WorkArea's worker list immediately to inform subsequent assignments
+		Worker->ResourcePlace->AddWorkerToArray(Worker);
+	}
+
 }
 
 ABuildingBase* AResourceGameMode::GetClosestBaseFromArray(AWorkingUnitBase* Worker, const TArray<ABuildingBase*>& Bases)
@@ -466,10 +581,15 @@ TArray<AWorkArea*> AResourceGameMode::GetFiveClosestResourcePlaces(AWorkingUnitB
 	AllAreas.Append(WorkAreaGroups.LegendaryAreas);
 	// Exclude BaseAreas and BuildAreas if they are not considered resource places
 
-	// Sort all areas by distance to the worker
-	AllAreas.Sort([Worker](const AWorkArea& AreaA, const AWorkArea& AreaB) {
-		return (AreaA.GetActorLocation() - Worker->GetActorLocation()).SizeSquared() < 
-			   (AreaB.GetActorLocation() - Worker->GetActorLocation()).SizeSquared();
+	// Sort all areas by distance to the worker's base (if available), otherwise use worker location
+	// This ensures resources are selected based on proximity to the base, not the worker's current position
+	const FVector ReferenceLocation = (Worker->Base && IsValid(Worker->Base)) 
+		? Worker->Base->GetActorLocation() 
+		: Worker->GetActorLocation();
+	
+	AllAreas.Sort([ReferenceLocation](const AWorkArea& AreaA, const AWorkArea& AreaB) {
+		return (AreaA.GetActorLocation() - ReferenceLocation).SizeSquared() < 
+			   (AreaB.GetActorLocation() - ReferenceLocation).SizeSquared();
 	});
 
 	// Take up to the first five areas
@@ -520,9 +640,12 @@ TArray<AWorkArea*> AResourceGameMode::GetClosestBuildPlaces(AWorkingUnitBase* Wo
 	
 	for (int i = 0; i < NumAreas; ++i)
 	{
-		if(!AllAreas[i]->PlannedBuilding)
+		if(Worker)
 		{
-			ClosestAreas.Add(AllAreas[i]);
+			if(!AllAreas[i]->PlannedBuilding && (AllAreas[i]->TeamId == Worker->TeamId || AllAreas[i]->TeamId == 0))
+			{
+				ClosestAreas.Add(AllAreas[i]);
+			}
 		}
 	}
 
@@ -608,11 +731,11 @@ void AResourceGameMode::RefundResourceCost(const FBuildingCost& ConstructionCost
 		ModifyResource(EResourceType::Legendary, TeamId, ConstructionCost.LegendaryCost);
 }
 
-float AResourceGameMode::GetResource(int TeamId, EResourceType RType)
+float AResourceGameMode::GetResource(int32 TeamId, EResourceType ResourceType) const
 {
 	for (const FResourceArray& ResourceArray : TeamResources)
 	{
-		if (ResourceArray.Resources.IsValidIndex(TeamId) && ResourceArray.ResourceType == RType)
+		if (ResourceArray.Resources.IsValidIndex(TeamId) && ResourceArray.ResourceType == ResourceType)
 		{
 			return ResourceArray.Resources[TeamId];
 		}
@@ -640,10 +763,15 @@ TArray<AWorkArea*> AResourceGameMode::GetClosestResourcePlaces(AWorkingUnitBase*
 	AllAreas.Append(WorkAreaGroups.LegendaryAreas);
 	// Exclude BaseAreas and BuildAreas if they are not considered resource places
 
-	// Sort all areas by distance to the worker
-	AllAreas.Sort([Worker](const AWorkArea& AreaA, const AWorkArea& AreaB) {
-		return (AreaA.GetActorLocation() - Worker->GetActorLocation()).SizeSquared() < 
-			   (AreaB.GetActorLocation() - Worker->GetActorLocation()).SizeSquared();
+	// Sort all areas by distance to the worker's base (if available), otherwise use worker location
+	// This ensures resources are selected based on proximity to the base, not the worker's current position
+	const FVector ReferenceLocation = (Worker->Base && IsValid(Worker->Base)) 
+		? Worker->Base->GetActorLocation() 
+		: Worker->GetActorLocation();
+	
+	AllAreas.Sort([ReferenceLocation](const AWorkArea& AreaA, const AWorkArea& AreaB) {
+		return (AreaA.GetActorLocation() - ReferenceLocation).SizeSquared() < 
+			   (AreaB.GetActorLocation() - ReferenceLocation).SizeSquared();
 	});
 
 	// Take up to the first five areas
@@ -659,29 +787,49 @@ TArray<AWorkArea*> AResourceGameMode::GetClosestResourcePlaces(AWorkingUnitBase*
 
 AWorkArea* AResourceGameMode::GetSuitableWorkAreaToWorker(int TeamId, const TArray<AWorkArea*>& WorkAreas)
 {
-	// Example structure for AllWorkers - replace with your actual collection
-			TArray<AWorkArea*> SuitableWorkAreas;
+	AWorkArea* BestWorkArea = nullptr;
+	int32 LowestWorkerCount = INT_MAX;
 	
-			// Check if there is space for the worker in any WorkArea based on ResourceType
-			for (AWorkArea* WorkArea : WorkAreas) // Replace with actual collection of work areas
-			{
-				if (WorkArea)
-				{
-						EResourceType ResourceType = ConvertToResourceType(WorkArea->Type); // Assume WorkArea has a ResourceType property
+	// Check if there is space for the worker in any WorkArea based on ResourceType
+	for (AWorkArea* WorkArea : WorkAreas)
+	{
+		if (WorkArea)
+		{
+			EResourceType ResourceType = ConvertToResourceType(WorkArea->Type);
 	
-						int32 CurrentWorkers = GetCurrentWorkersForResourceType(TeamId, ResourceType);
-						int32 MaxWorkers = GetMaxWorkersForResourceType(TeamId, ResourceType); // Implement this based on your AttributeSet
+			int32 CurrentWorkers = GetCurrentWorkersForResourceType(TeamId, ResourceType);
+			int32 MaxWorkers = GetMaxWorkersForResourceType(TeamId, ResourceType);
 
-						if (CurrentWorkers < MaxWorkers)
-						{
-							//UE_LOG(LogTemp, Log, TEXT("Added Area!"));
-							SuitableWorkAreas.Add(WorkArea);
-						}
+			if (CurrentWorkers < MaxWorkers)
+			{
+				const int32 WorkerCount = WorkArea->Workers.Num();
+				if (WorkerCount < LowestWorkerCount)
+				{
+					LowestWorkerCount = WorkerCount;
+					BestWorkArea = WorkArea;
 				}
 			}
+		}
+	}
 
+	// Fallback: If no work area matches the MaxWorkers constraint, pick the one with fewest workers anyway
+	if (!BestWorkArea && WorkAreas.Num() > 0)
+	{
+		for (AWorkArea* WorkArea : WorkAreas)
+		{
+			if (WorkArea)
+			{
+				const int32 WorkerCount = WorkArea->Workers.Num();
+				if (WorkerCount < LowestWorkerCount)
+				{
+					LowestWorkerCount = WorkerCount;
+					BestWorkArea = WorkArea;
+				}
+			}
+		}
+	}
 	
-	return GetRandomClosestWorkArea(SuitableWorkAreas);
+	return BestWorkArea;
 }
 
 void AResourceGameMode::AddMaxWorkersForResourceType(int TeamId, EResourceType ResourceType, float Amount)
@@ -839,20 +987,15 @@ int32 AResourceGameMode::GetMaxWorkersForResourceType(int TeamId, EResourceType 
 	return 0;
 }
 
-bool AResourceGameMode::CanSpawnUnit(int32 TeamId, int32 PopulationCost) const
+bool AResourceGameMode::IsWorkerDistributionSet(int TeamId) const
 {
-	// Default: no population limit
-	return true;
-}
-
-int32 AResourceGameMode::GetCurrentPopulation(int32 TeamId) const
-{
-	// Default: return 0 (no population tracking)
-	return 0;
-}
-
-int32 AResourceGameMode::GetMaxPopulation(int32 TeamId) const
-{
-	// Default: return very high number (no limit)
-	return INT32_MAX;
+	// Check if any MaxWorkers value is greater than 0 for the given team
+	for (const FResourceArray& ResourceArray : TeamResources)
+	{
+		if (ResourceArray.MaxWorkers.IsValidIndex(TeamId) && ResourceArray.MaxWorkers[TeamId] > 0)
+		{
+			return true;
+		}
+	}
+	return false;
 }
