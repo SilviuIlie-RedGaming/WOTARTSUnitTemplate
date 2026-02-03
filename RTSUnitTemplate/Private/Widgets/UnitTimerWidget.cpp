@@ -13,7 +13,6 @@
 #include "Components/Widget.h"
 #include "Components/HorizontalBox.h"
 #include "Components/Image.h"
-#include "Components/TextBlock.h"
 #include "Components/Button.h"
 #include "Blueprint/UserWidget.h"
 #include "Engine/Texture2D.h"
@@ -177,12 +176,6 @@ void UUnitTimerWidget::TimerTick()
 				TimerBar->SetPercent(Percent);
 				TimerBar->SetFillColorAndOpacity(TransportColor);
 				MyWidgetIsVisible = (UnitBase->CurrentUnitsLoaded > 0);
-
-				if (TransportText)
-				{
-					const FString LoadString = FString::Printf(TEXT("%d/%d"), UnitBase->CurrentUnitsLoaded, UnitBase->MaxTransportUnits);
-					TransportText->SetText(FText::FromString(LoadString));
-				}
 			}
 			else
 			{

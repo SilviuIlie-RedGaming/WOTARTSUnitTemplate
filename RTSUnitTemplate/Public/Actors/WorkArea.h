@@ -119,10 +119,7 @@ public:
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = RTSUnitTemplate)
 	float ExtractionSoundVolume = 1.0f;
-	
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = RTSUnitTemplate)
-	TSubclassOf<class ABuildingBase> BuildingClass;
-	
+
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = RTSUnitTemplate)
 	ABuildingBase* Building;
 

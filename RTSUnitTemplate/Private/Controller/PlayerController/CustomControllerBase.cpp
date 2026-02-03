@@ -1879,33 +1879,19 @@ void ACustomControllerBase::LeftClickPressedMass()
 
 	if (SwapAttackMove) AttackToggled = false;
 	
-    // --- ALT: cancel / destroy area ---
 	if (AltIsPressed)
-    {
-        DestroyWorkArea();
-        for (AUnitBase* U : SelectedUnits)
-        {
-            CancelAbilitiesIfNoBuilding(U);
-        }
-    }
-	else if (bIsAwaitingAttackGroundTarget)
 	{
-		FHitResult Hit;
-		GetHitResultUnderCursor(ECollisionChannel::ECC_Visibility, false, Hit);
-
-		if (Hit.bBlockingHit)
+		DestroyWorkArea();
+		for (AUnitBase* U : SelectedUnits)
 		{
-			SetAttackGroundLocationOnSelectedUnits(Hit.Location);
+			CancelAbilitiesIfNoBuilding(U);
 		}
-
-		bIsAwaitingAttackGroundTarget = false;
-		return;
 	}
 	else if (AttackToggled && !SwapAttackMove)
 	{
-        HandleAttackMovePressed();
-    }
-    else if (AttackToggled)
+		HandleAttackMovePressed();
+	}
+	else
     {
         FHitResult HitPawn;
         GetHitResultUnderCursor(ECollisionChannel::ECC_Pawn, false, HitPawn);

@@ -762,10 +762,6 @@ void AExtendedCameraBase::SwitchControllerStateMachine(const FInputActionValue& 
     				{
 
     				}break;
-    			case 13:
-    				{
-    					HandleState_ScrollZoom(InputActionValue, CameraControllerBase);
-    				}break;
     			case 21: CameraControllerBase->SelectUnitsWithTag(CameraControllerBase->KeyTagAlt1, CameraControllerBase->SelectableTeamId); break; // ExecuteOnAbilityInputDetected(EGASAbilityInputID::AbilitySeven, CameraControllerBase);break;
     			case 22: CameraControllerBase->SelectUnitsWithTag(CameraControllerBase->KeyTagAlt2, CameraControllerBase->SelectableTeamId); break;// ExecuteOnAbilityInputDetected(EGASAbilityInputID::AbilityEight, CameraControllerBase); break;
     			case 23: CameraControllerBase->SelectUnitsWithTag(CameraControllerBase->KeyTagAlt3, CameraControllerBase->SelectableTeamId); break; // ExecuteOnAbilityInputDetected(EGASAbilityInputID::AbilityNine, CameraControllerBase); break;
@@ -818,10 +814,6 @@ void AExtendedCameraBase::SwitchControllerStateMachine(const FInputActionValue& 
             case 999: HandleState_StopRotateLeft(CameraControllerBase); break;
             case 10: CameraControllerBase->SelectUnitsWithTag(CameraControllerBase->KeyTagCtrlE, CameraControllerBase->SelectableTeamId); break;
             case 101010: HandleState_StopRotateRight(CameraControllerBase); break;
-            case 13: 
-                if (SwapScroll) HandleState_AbilityArrayIndex(InputActionValue, CameraControllerBase);
-                else HandleState_ScrollZoom(InputActionValue, CameraControllerBase);
-                break;
             case 18: CameraControllerBase->SelectUnitsWithTag(CameraControllerBase->KeyTagCtrlR, CameraControllerBase->SelectableTeamId); break;
             case 21: CameraControllerBase->SelectUnitsWithTag(CameraControllerBase->KeyTagCtrl1, CameraControllerBase->SelectableTeamId); break; // ExecuteOnAbilityInputDetected(EGASAbilityInputID::AbilitySeven, CameraControllerBase);break;
             case 22: CameraControllerBase->SelectUnitsWithTag(CameraControllerBase->KeyTagCtrl2, CameraControllerBase->SelectableTeamId); break;// ExecuteOnAbilityInputDetected(EGASAbilityInputID::AbilityEight, CameraControllerBase); break;
@@ -868,10 +860,7 @@ void AExtendedCameraBase::SwitchControllerStateMachine(const FInputActionValue& 
             case 10: HandleState_RotateRight_NoStrg(CameraControllerBase); break;
             case 101010: HandleState_StopRotateRight_NoStrg(CameraControllerBase); break;
             case 12: HandleState_TPressed(CameraControllerBase); break;
-            case 13: 
-                if (SwapScroll) HandleState_ScrollZoom(InputActionValue, CameraControllerBase);
-                else HandleState_AbilityArrayIndex(InputActionValue, CameraControllerBase);
-                break;
+			case 13: HandleState_ScrollZoom(InputActionValue, CameraControllerBase); break;
             case 16: HandleState_MiddleMousePressed(CameraControllerBase); break;
             case 17: HandleState_MiddleMouseReleased(CameraControllerBase); break;
             case 18: CameraControllerBase->SetHoldPositionOnSelectedUnits(); break;
@@ -1335,8 +1324,17 @@ void AExtendedCameraBase::HandleState_ScrollZoom(const FInputActionValue& InputA
 {
 	float FloatValue = InputActionValue.Get<float>();
 
-	if(CameraControllerBase->ScrollZoomCount <= 10.f)
-		CameraControllerBase->ScrollZoomCount += FloatValue*2;
+	if ((FloatValue > 0.f && CameraControllerBase->ScrollZoomCount < 0.f) ||
+		(FloatValue < 0.f && CameraControllerBase->ScrollZoomCount > 0.f))
+	{
+		CameraControllerBase->ScrollZoomCount = 0.f;
+	}
+
+	CameraControllerBase->ScrollZoomCount = FMath::Clamp(
+		CameraControllerBase->ScrollZoomCount + FloatValue * 2.f,
+		-10.f,
+		10.f
+	);
 				
 	if(CameraControllerBase->LockCameraToCharacter)
 		return;

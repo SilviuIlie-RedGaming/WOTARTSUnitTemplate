@@ -899,6 +899,11 @@ void ACameraControllerBase::CameraState_ZoomOut()
 
 void ACameraControllerBase::HandleScrollZoomIn()
 {
+	if (CameraBase && CameraBase->CurrentCamSpeed.Z < 0.f)
+	{
+		CameraBase->CurrentCamSpeed.Z = 0.f;
+	}
+
 	if(ScrollZoomCount > 0.f)
 	{
 		if (IsLocalController())
@@ -926,12 +931,17 @@ void ACameraControllerBase::HandleScrollZoomIn()
 
 void ACameraControllerBase::HandleScrollZoomOut()
 {
+	if (CameraBase && CameraBase->CurrentCamSpeed.Z > 0.f)
+	{
+		CameraBase->CurrentCamSpeed.Z = 0.f;
+	}
+
 	if(ScrollZoomCount < 0.f)
 	{
 		if (IsLocalController())
 		{
 			CameraBase->ZoomOut(1.f);
-			CameraBase->RotateSpringArm(true);
+			CameraBase->RotateSpringArm(false);
 		}
 
 		SetCameraZDistance(0);
@@ -955,10 +965,7 @@ void ACameraControllerBase::CameraState_ScrollZoomIn()
 {
 	HandleScrollZoomIn();
 
-	if(ScrollZoomCount < 0.f && CameraBase->CurrentCamSpeed.Z == 0.f)
-	{
-		CameraBase->SetCameraState(CameraData::ScrollZoomOut);
-	}else if(ScrollZoomCount == 0.f && CameraBase->CurrentCamSpeed.Z == 0.f)
+	if (ScrollZoomCount == 0.f && CameraBase->CurrentCamSpeed.Z == 0.f)
 	{
 		if(LockCameraToCharacter) CameraBase->SetCameraState(CameraData::LockOnCharacter);
 		else if(!CamIsZoomingInState) CameraBase->SetCameraState(CameraData::UseScreenEdges);
@@ -974,10 +981,7 @@ void ACameraControllerBase::CameraState_ScrollZoomOut()
 {
 	HandleScrollZoomOut();
 
-	if(ScrollZoomCount > 0.f && CameraBase->CurrentCamSpeed.Z == 0.f)
-	{
-		CameraBase->SetCameraState(CameraData::ScrollZoomIn);
-	}else if(ScrollZoomCount == 0.f && CameraBase->CurrentCamSpeed.Z == 0.f)
+	if (ScrollZoomCount == 0.f && CameraBase->CurrentCamSpeed.Z == 0.f)
 	{
 		if(LockCameraToCharacter) CameraBase->SetCameraState(CameraData::LockOnCharacter);
 		else if(!CamIsZoomingOutState) CameraBase->SetCameraState(CameraData::UseScreenEdges);
@@ -1603,13 +1607,18 @@ void ACameraControllerBase::LockCamToCharacter(int Index)
 		}
 		// --- End Interpolation Logic ---
 
-
-		if(ScrollZoomCount > 0.f)
+		const CameraData::CameraState CurrentState = CameraBase->GetCameraState();
+		const bool bAlreadyInScrollZoom = (CurrentState == CameraData::ScrollZoomIn || CurrentState == CameraData::ScrollZoomOut);
+		if (!bAlreadyInScrollZoom)
 		{
-			CameraBase->SetCameraState(CameraData::ScrollZoomIn);
-		}else if(ScrollZoomCount < 0.f)
-		{
-			CameraBase->SetCameraState(CameraData::ScrollZoomOut);
+			if (ScrollZoomCount > 0.f)
+			{
+				CameraBase->SetCameraState(CameraData::ScrollZoomIn);
+			}
+			else if (ScrollZoomCount < 0.f)
+			{
+				CameraBase->SetCameraState(CameraData::ScrollZoomOut);
+			}
 		}
 
 		if(RotateBehindCharacterIfLocked)

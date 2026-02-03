@@ -147,13 +147,13 @@ public:
 
 	// Population cap checking - override in game-specific subclass
 	UFUNCTION(BlueprintCallable, Category = RTSUnitTemplate)
-	virtual bool CanSpawnUnit(int32 TeamId, int32 PopulationCost = 1) const;
+	virtual bool CanSpawnUnit(int32 TeamId, int32 PopulationCost = 1) const { return true; }
 
 	UFUNCTION(BlueprintCallable, Category = RTSUnitTemplate)
-	virtual int32 GetCurrentPopulation(int32 TeamId) const;
+	virtual int32 GetCurrentPopulation(int32 TeamId) const { return 0; }
 
 	UFUNCTION(BlueprintCallable, Category = RTSUnitTemplate)
-	virtual int32 GetMaxPopulation(int32 TeamId) const;
+	virtual int32 GetMaxPopulation(int32 TeamId) const { return 0; }
 	/** Checks if a specific resource type can be afforded */
 	UFUNCTION(BlueprintCallable, Category = RTSUnitTemplate)
 	bool CanAffordResource(EResourceType ResourceType, float Amount, int32 TeamId) const;

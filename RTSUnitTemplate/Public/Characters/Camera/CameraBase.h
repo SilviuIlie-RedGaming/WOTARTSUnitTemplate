@@ -321,9 +321,6 @@ public:
 	float MovePositionCamSpeed = 1.0f;
 	// Control Widget
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = RTSUnitTemplate)
-	bool SwapScroll = false;
-
 	UPROPERTY(VisibleAnywhere, BlueprintReadWrite, Category = RTSUnitTemplate)
 	UUserWidget* ControlWidget;
 	

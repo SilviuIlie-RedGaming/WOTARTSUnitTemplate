@@ -21,7 +21,7 @@ void UControlWidget::NativeConstruct()
 			ACameraBase* Camera = Cast<ACameraBase>(PC->GetPawn());
 			if (Camera)
 			{
-				SwapScrollCheckBox->SetIsChecked(Camera->SwapScroll);
+				//SwapScrollCheckBox->SetIsChecked(Camera->SwapScroll);
 			}
 		}
 	}
@@ -46,7 +46,7 @@ void UControlWidget::OnSwapScrollChanged(bool bIsChecked)
 		ACameraBase* Camera = Cast<ACameraBase>(PC->GetPawn());
 		if (Camera)
 		{
-			Camera->SwapScroll = bIsChecked;
+			//Camera->SwapScroll = bIsChecked;
 		}
 	}
 }

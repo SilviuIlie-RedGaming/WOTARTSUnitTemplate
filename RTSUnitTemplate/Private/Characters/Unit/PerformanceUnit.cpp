@@ -340,7 +340,7 @@ void APerformanceUnit::HandleStandardHealthBarVisibility()
 	const bool bFogAllows = (!EnableFog || IsVisibleEnemy || IsMyTeam);
 
 	// Check if production is active (currently producing OR has queued items)
-	AUnitBase* WidgetOwner = HealthBarWidget->OwnerCharacter;
+	AUnitBase* WidgetOwner = CachedHealthBarWidget->OwnerCharacter;
 	bool bIsProducing = WidgetOwner && WidgetOwner->CastTime > 0.0f && WidgetOwner->UnitControlTimer > 0.0f && WidgetOwner->UnitControlTimer < WidgetOwner->CastTime;
 
 	// Also check if there are queued abilities (production queue not empty)
