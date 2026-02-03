@@ -8,12 +8,13 @@
 #include "MassMovementFragments.h"
 #include "Mass/UnitMassTag.h"
 
-#include "MassActorSubsystem.h"   
+#include "MassActorSubsystem.h"
 #include "MassNavigationFragments.h"
 #include "MassSignalSubsystem.h"
 #include "Characters/Unit/UnitBase.h" // Für Cast
 #include "Actors/Waypoint.h"      // Für Waypoint-Interaktion (falls noch nötig)
 #include "Mass/Signals/MySignals.h"
+#include "Core/UnitData.h" //Julien changes// Added for passive stance check
 #include "Async/Async.h"
 
 UPatrolRandomStateProcessor::UPatrolRandomStateProcessor(): EntityQuery()
@@ -90,8 +91,11 @@ void UPatrolRandomStateProcessor::Execute(FMassEntityManager& EntityManager, FMa
             FMassMoveTargetFragment& MoveTarget = MoveTargetList[i]; // Mutable for StopMovement
             const FTransformFragment& TransformFrag = TransformList[i];
 
+            //Julien changes// Passive stance units should NOT auto-attack enemies
+            const bool bIsPassive = (TargetFrag.CurrentStance == static_cast<uint8>(UnitStanceData::EStance::Passive));
+
             // --- 1. Check for sighted enemy ---
-            if (TargetFrag.bHasValidTarget && !StateFrag.SwitchingState)
+            if (TargetFrag.bHasValidTarget && !StateFrag.SwitchingState && !bIsPassive) //Julien changes// Added !bIsPassive
             {
                 // Queue signal instead of sending directly
                 StateFrag.SwitchingState = true;

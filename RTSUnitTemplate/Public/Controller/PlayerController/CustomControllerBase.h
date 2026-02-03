@@ -19,6 +19,7 @@
 
 class USoundBase;
 class AUnitBase;
+class UNiagaraSystem;
 
 #include "CustomControllerBase.generated.h"
 
@@ -59,7 +60,13 @@ protected:
 	// Handles capture point click flow when units are selected. Returns true if handled.
 	bool HandleCapturePointSelection(const FHitResult& HitPawn);
 
+	// Spawns right-click VFX at cursor hit location (local-only).
+	void SpawnRightClickIndicatorEffect(const FHitResult& Hit) const;
+
 public:
+	UPROPERTY(EditDefaultsOnly, Category = "RTSUnitTemplate|VFX")
+	UNiagaraSystem* RightClickLocationIndicator = nullptr;
+
 	UFUNCTION(NetMulticast, Reliable)
 	void Multi_SetMyTeamUnits(const TArray<AActor*>& AllUnits);
 	

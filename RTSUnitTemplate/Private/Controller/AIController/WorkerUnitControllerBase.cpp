@@ -227,7 +227,9 @@ void AWorkerUnitControllerBase::IdleWorker(AUnitBase* UnitBase, float DeltaSecon
 
 	UnitBase->UnitControlTimer += DeltaSeconds;
 	
-	if(UnitBase->CollisionUnit && UnitBase->CollisionUnit->TeamId != UnitBase->TeamId && UnitBase->CollisionUnit->GetUnitState() != UnitData::Dead && !UnitBase->IsOnPlattform)
+	// Only react to enemy collision if not Passive stance
+	if(UnitBase->CurrentStance != UnitStanceData::EStance::Passive &&
+	   UnitBase->CollisionUnit && UnitBase->CollisionUnit->TeamId != UnitBase->TeamId && UnitBase->CollisionUnit->GetUnitState() != UnitData::Dead && !UnitBase->IsOnPlattform)
 	{
 		UnitBase->UnitToChase = UnitBase->CollisionUnit;
 		UnitBase->UnitsToChase.Emplace(UnitBase->CollisionUnit);

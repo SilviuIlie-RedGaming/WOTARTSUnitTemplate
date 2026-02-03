@@ -369,27 +369,50 @@ FVector ACameraControllerBase::GetCameraPanDirection() {
 	float CamDirectionX = 0;
 	float CamDirectionY = 0;
 
-	GetMousePosition(MousePosX, MousePosY);
+	if (!GetMousePosition(MousePosX, MousePosY))
+	{
+		return FVector::ZeroVector;
+	}
+
+	if (CameraBase->ScreenSizeX <= 0 || CameraBase->ScreenSizeY <= 0)
+	{
+		GetViewPortScreenSizes(CameraBase->GetViewPortScreenSizesState);
+		if (CameraBase->ScreenSizeX <= 0 || CameraBase->ScreenSizeY <= 0)
+		{
+			return FVector::ZeroVector;
+		}
+	}
+
+	const float LeftEdge = CameraBase->Margin;
+	const float RightEdge = CameraBase->ScreenSizeX - CameraBase->Margin;
+	const float TopEdge = CameraBase->Margin;
+	const float BottomEdge = CameraBase->ScreenSizeY - CameraBase->Margin;
+	const bool bInsideX = MousePosX > LeftEdge && MousePosX < RightEdge;
+	const bool bInsideY = MousePosY > TopEdge && MousePosY < BottomEdge;
+	if (bInsideX && bInsideY)
+	{
+		return FVector::ZeroVector;
+	}
 
 	const float CosYaw = FMath::Cos(CameraBase->SpringArmRotator.Yaw*PI/180);
 	const float SinYaw = FMath::Sin(CameraBase->SpringArmRotator.Yaw*PI/180);
 	
-	if (MousePosX <= CameraBase->Margin)
+	if (MousePosX <= LeftEdge)
 	{
 		CamDirectionY = -CosYaw;
 		CamDirectionX = SinYaw;
 	}
-	if (MousePosY <= CameraBase->Margin)
+	if (MousePosY <= TopEdge)
 	{
 		CamDirectionX = CosYaw;
 		CamDirectionY = SinYaw;
 	}
-	if (MousePosX >= CameraBase->ScreenSizeX - CameraBase->Margin)
+	if (MousePosX >= RightEdge)
 	{
 		CamDirectionY = CosYaw;
 		CamDirectionX = -SinYaw;
 	}
-	if (MousePosY >= CameraBase->ScreenSizeY - CameraBase->Margin)
+	if (MousePosY >= BottomEdge)
 	{
 		CamDirectionX = -CosYaw;
 		CamDirectionY = -SinYaw;

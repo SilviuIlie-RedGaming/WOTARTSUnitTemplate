@@ -8,6 +8,7 @@
 #include "MassNavigationFragments.h"
 #include "Mass/UnitMassTag.h"
 #include "Mass/Signals/MySignals.h"
+#include "Core/UnitData.h" //Julien changes// Added for passive stance check
 #include "Async/Async.h"
 
 URunStateProcessor::URunStateProcessor(): EntityQuery()
@@ -197,10 +198,12 @@ void URunStateProcessor::ExecuteServer(FMassEntityManager& EntityManager, FMassE
             
             // Follow friendly target directly if assigned
             const bool bHasFriendly = EntityManager.IsEntityValid(TargetFrag.FriendlyTargetEntity);
-            
-            
+
+            //Julien changes// Passive stance units should NOT auto-attack enemies
+            const bool bIsPassive = (TargetFrag.CurrentStance == static_cast<uint8>(UnitStanceData::EStance::Passive));
+
             if (DoesEntityHaveTag(EntityManager,Entity, FMassStateDetectTag::StaticStruct()) &&
-                TargetFrag.bHasValidTarget && !StateFrag.SwitchingState)
+                TargetFrag.bHasValidTarget && !StateFrag.SwitchingState && !bIsPassive) //Julien changes// Added !bIsPassive
             {
                 StateFrag.SwitchingState = true;
                 if (SignalSubsystem)

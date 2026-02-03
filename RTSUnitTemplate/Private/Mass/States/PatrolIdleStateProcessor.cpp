@@ -10,6 +10,7 @@
 #include "Characters/Unit/UnitBase.h"
 #include "Mass/UnitMassTag.h"
 #include "Mass/Signals/MySignals.h"
+#include "Core/UnitData.h" //Julien changes// Added for passive stance check
 #include "Async/Async.h"
 
 UPatrolIdleStateProcessor::UPatrolIdleStateProcessor(): EntityQuery()
@@ -91,8 +92,11 @@ void UPatrolIdleStateProcessor::Execute(FMassEntityManager& EntityManager, FMass
             Velocity.Value = FVector::ZeroVector; // Modification stays here
             StateFrag.StateTimer += ExecutionInterval; // Modification stays here
 
+            //Julien changes// Passive stance units should NOT auto-attack enemies
+            const bool bIsPassive = (TargetFrag.CurrentStance == static_cast<uint8>(UnitStanceData::EStance::Passive));
+
             // --- Check for Valid Target ---
-            if (TargetFrag.bHasValidTarget && !StateFrag.SwitchingState)
+            if (TargetFrag.bHasValidTarget && !StateFrag.SwitchingState && !bIsPassive) //Julien changes// Added !bIsPassive
             {
                 StateFrag.SwitchingState = true;
                 if (SignalSubsystem)

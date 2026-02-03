@@ -159,6 +159,12 @@ void AUnitControllerBase::OnUnitDetected(const TArray<AActor*>& DetectedUnits, b
 	AUnitBase* CurrentUnit = MyUnitBase;
 	if (!CurrentUnit || CurrentUnit->GetUnitState() == UnitData::Dead || CurrentUnit->GetUnitState() == UnitData::Evasion) return;
 
+	// Passive stance: don't detect or engage enemies at all
+	if (CurrentUnit->CurrentStance == UnitStanceData::EStance::Passive)
+	{
+		return;
+	}
+
 	// Loop through each detected unit
 	for (AActor* Actor : DetectedUnits)
 	{
@@ -171,19 +177,25 @@ void AUnitControllerBase::OnUnitDetected(const TArray<AActor*>& DetectedUnits, b
 				CurrentUnit->UnitsToChase.Emplace(DetectedUnit);
 			}
 		}
-		
+
 	}
 
 	// The actual state change logic is refactored here, outside the loop.
 
 	if(!SetState) return;
-	
+
+	// Defensive stance: don't auto-chase, only attack if enemy comes into attack range
+	if (CurrentUnit->CurrentStance == UnitStanceData::EStance::Defensive)
+	{
+		return;
+	}
+
 	//if(!CurrentUnit->UnitToChase)
 	if (CurrentUnit->SetNextUnitToChase())
 	{
 		bool isUnitChasing = CurrentUnit->GetUnitState() == UnitData::Chase;
 		bool canChangeState = !isUnitChasing && CurrentUnit->GetUnitState() != UnitData::Attack && CurrentUnit->GetUnitState() != UnitData::Casting;
-        
+
 		if (DetectFriendlyUnits)
 		{
 			bool shouldChase = canChangeState && CurrentUnit->UnitToChase->Attributes->GetHealth() < CurrentUnit->UnitToChase->Attributes->GetMaxHealth();
@@ -273,16 +285,17 @@ void AUnitControllerBase::UnitControlStateMachine(AUnitBase* UnitBase, float Del
 				{
 					UnitBase->SetUnitState(UnitData::PatrolIdle);
 				}
-	
-				if(UnitBase->SetNextUnitToChase())
+
+				// Only auto-chase if Aggressive stance
+				if(UnitBase->CurrentStance == UnitStanceData::EStance::Aggressive && UnitBase->SetNextUnitToChase())
 				{
 					UnitBase->SetUEPathfinding = true;
 					UnitBase->SetUnitState(UnitData::Chase);
 					return;
 				}
-				
+
 				DetectAndLoseUnits();
-				
+
 				if(UnitBase->GetUnitState() != UnitData::Chase)
 				{
 					UnitBase->SetWalkSpeed(UnitBase->Attributes->GetRunSpeed());
@@ -294,13 +307,14 @@ void AUnitControllerBase::UnitControlStateMachine(AUnitBase* UnitBase, float Del
 		case UnitData::PatrolIdle:
 			{
 				if(Debug)UE_LOG(LogTemp, Warning, TEXT("PatrolIdle"));
-				if(UnitBase->SetNextUnitToChase())
+				// Only auto-chase if Aggressive stance
+				if(UnitBase->CurrentStance == UnitStanceData::EStance::Aggressive && UnitBase->SetNextUnitToChase())
 				{
 					UnitBase->SetUEPathfinding = true;
 					UnitBase->SetUnitState(UnitData::Chase);
 					return;
 				}
-				
+
 				DetectAndLoseUnits();
 				
 				if(UnitBase->GetUnitState() != UnitData::Chase)
@@ -618,8 +632,8 @@ void AUnitControllerBase::DetectUnitsAndSetState(AUnitBase* UnitBase, float Delt
 
 void AUnitControllerBase::Patrol(AUnitBase* UnitBase, float DeltaSeconds)
 {
-
-	if(UnitBase->SetNextUnitToChase())
+	// Only auto-chase if Aggressive stance
+	if(UnitBase->CurrentStance == UnitStanceData::EStance::Aggressive && UnitBase->SetNextUnitToChase())
 	{
 		UnitBase->SetUEPathfinding = true;
 		UnitBase->SetUnitState(UnitData::Chase);
@@ -665,7 +679,8 @@ void AUnitControllerBase::Run(AUnitBase* UnitBase, float DeltaSeconds)
 {
 	if(Debug) UE_LOG(LogTemp, Warning, TEXT("No UE PF Run!!!"));
 
-	if(UnitBase->GetToggleUnitDetection())
+	// Only auto-chase if Aggressive stance
+	if(UnitBase->GetToggleUnitDetection() && UnitBase->CurrentStance == UnitStanceData::EStance::Aggressive)
 	{
 		if(UnitBase->SetNextUnitToChase())
 		{
@@ -714,7 +729,9 @@ void AUnitControllerBase::Chase(AUnitBase* UnitBase, float DeltaSeconds)
 	//LoseUnitToChase(UnitBase);
 	
 	
-	if(UnitBase->CollisionUnit 
+	// Only react to enemy collision if not Passive stance
+	if(UnitBase->CurrentStance != UnitStanceData::EStance::Passive &&
+	   UnitBase->CollisionUnit
        && UnitBase->CollisionUnit->GetUnitState() != UnitData::Dead && UnitBase->CollisionUnit->TeamId != UnitBase->TeamId)
     {
     		UnitBase->UnitToChase = UnitBase->CollisionUnit;
@@ -909,7 +926,9 @@ void AUnitControllerBase::Attack(AUnitBase* UnitBase, float DeltaSeconds)
 					UnitBase->UnitToChase->ActivateAbilityByInputID(UnitBase->UnitToChase->DefensiveAbilityID, UnitBase->UnitToChase->DefensiveAbilities);
 					UnitBase->UnitToChase->FireEffects(UnitBase->MeleeImpactVFX, UnitBase->MeleeImpactSound, UnitBase->ScaleImpactVFX, UnitBase->ScaleImpactSound, UnitBase->MeeleImpactVFXDelay, UnitBase->MeleeImpactSoundDelay);
 					
-					if (!UnitBase->UnitToChase->UnitsToChase.Contains(UnitBase))
+					// Only trigger counter-attack if victim is not Passive stance
+				if (UnitBase->UnitToChase->CurrentStance != UnitStanceData::EStance::Passive &&
+					!UnitBase->UnitToChase->UnitsToChase.Contains(UnitBase))
 					{
 						// If not, add UnitBase to the array
 						UnitBase->UnitToChase->UnitsToChase.Emplace(UnitBase);
@@ -998,29 +1017,39 @@ void AUnitControllerBase::Idle(AUnitBase* UnitBase, float DeltaSeconds)
 
 	//DetectUnits(UnitBase, DeltaSeconds, true);
 	//LoseUnitToChase(UnitBase);
-	
+
 	//UnitBase->UnitControlTimer += DeltaSeconds;
-	
+
 	//if (UnitBase->UnitControlTimer >= 1.5f)
 	DetectAndLoseUnits();
-	
-	if(UnitBase->CollisionUnit && UnitBase->CollisionUnit->TeamId != UnitBase->TeamId && UnitBase->CollisionUnit->GetUnitState() != UnitData::Dead && !UnitBase->IsOnPlattform)
+
+	// Only react to collisions if not Passive stance
+	if(UnitBase->CurrentStance != UnitStanceData::EStance::Passive)
 	{
-		UnitBase->UnitToChase = UnitBase->CollisionUnit;
-		UnitBase->UnitsToChase.Emplace(UnitBase->CollisionUnit);
-		UnitBase->CollisionUnit = nullptr;
-	}else if(UnitBase->CollisionUnit && UnitBase->CollisionUnit->TeamId == UnitBase->TeamId && UnitBase->CollisionUnit->GetUnitState() != UnitData::Dead && !UnitBase->IsOnPlattform)
+		if(UnitBase->CollisionUnit && UnitBase->CollisionUnit->TeamId != UnitBase->TeamId && UnitBase->CollisionUnit->GetUnitState() != UnitData::Dead && !UnitBase->IsOnPlattform)
+		{
+			UnitBase->UnitToChase = UnitBase->CollisionUnit;
+			UnitBase->UnitsToChase.Emplace(UnitBase->CollisionUnit);
+			UnitBase->CollisionUnit = nullptr;
+		}
+	}
+
+	if(UnitBase->CollisionUnit && UnitBase->CollisionUnit->TeamId == UnitBase->TeamId && UnitBase->CollisionUnit->GetUnitState() != UnitData::Dead && !UnitBase->IsOnPlattform)
 	{
 		UnitBase->UnitStatePlaceholder = UnitData::Idle;
 		UnitBase->RunLocation = UnitBase->GetActorLocation();
 		UnitBase->SetUnitState(UnitData::Evasion);
 	}
 
-	if(UnitBase->SetNextUnitToChase() && !UnitBase->IsOnPlattform && UnitBase->CanAttack)
+	// Only auto-chase if Aggressive stance
+	if(UnitBase->CurrentStance == UnitStanceData::EStance::Aggressive && UnitBase->SetNextUnitToChase() && !UnitBase->IsOnPlattform && UnitBase->CanAttack)
 	{
-			UnitBase->SetUnitState(UnitData::Chase);
-	}else if(!UnitBase->IsOnPlattform)
+		UnitBase->SetUnitState(UnitData::Chase);
+	}
+	else if(!UnitBase->IsOnPlattform)
+	{
 		SetUnitBackToPatrol(UnitBase, DeltaSeconds);
+	}
 }
 
 void AUnitControllerBase::EvasionChase(AUnitBase* UnitBase, float DeltaSeconds, FVector CollisionLocation)
@@ -1104,8 +1133,9 @@ void AUnitControllerBase::RunUEPathfinding(AUnitBase* UnitBase, float DeltaSecon
 	if(Debug) UE_LOG(LogTemp, Warning, TEXT("RunUEPathfinding!"));
 
 	DetectAndLoseUnits();
-	
-	if(UnitBase->GetToggleUnitDetection())
+
+	// Only auto-chase if Aggressive stance
+	if(UnitBase->GetToggleUnitDetection() && UnitBase->CurrentStance == UnitStanceData::EStance::Aggressive)
 	{
 		if(UnitBase->SetNextUnitToChase() && UnitBase->CanAttack)
 		{
@@ -1138,9 +1168,8 @@ void AUnitControllerBase::RunUEPathfinding(AUnitBase* UnitBase, float DeltaSecon
 
 void AUnitControllerBase::PatrolUEPathfinding(AUnitBase* UnitBase, float DeltaSeconds)
 {
-
-
-	if(UnitBase->SetNextUnitToChase())
+	// Only auto-chase if Aggressive stance
+	if(UnitBase->CurrentStance == UnitStanceData::EStance::Aggressive && UnitBase->SetNextUnitToChase())
 	{
 		UnitBase->SetUEPathfinding = true;
 		UnitBase->SetUnitState(UnitData::Chase);
@@ -1151,14 +1180,19 @@ void AUnitControllerBase::PatrolUEPathfinding(AUnitBase* UnitBase, float DeltaSe
 	UnitBase->SetWalkSpeed(UnitBase->Attributes->GetRunSpeed());
 
 	DetectAndLoseUnits();
-	
-	if(UnitBase->CollisionUnit && UnitBase->CollisionUnit->TeamId !=  UnitBase->TeamId && UnitBase->CollisionUnit->GetUnitState() != UnitData::Dead)
+
+	// Only react to enemy collision if not Passive, and only chase if Aggressive
+	if(UnitBase->CurrentStance != UnitStanceData::EStance::Passive &&
+	   UnitBase->CollisionUnit && UnitBase->CollisionUnit->TeamId != UnitBase->TeamId && UnitBase->CollisionUnit->GetUnitState() != UnitData::Dead)
 	{
 		UnitBase->UnitToChase = UnitBase->CollisionUnit;
 		UnitBase->UnitsToChase.Emplace(UnitBase->CollisionUnit);
 		UnitBase->CollisionUnit = nullptr;
-		UnitBase->SetUEPathfinding = true;
-		UnitBase->SetUnitState(UnitData::Chase);
+		if(UnitBase->CurrentStance == UnitStanceData::EStance::Aggressive)
+		{
+			UnitBase->SetUEPathfinding = true;
+			UnitBase->SetUnitState(UnitData::Chase);
+		}
 	}
 	else if(UnitBase->GetUnitState() == UnitData::Chase )//UnitBase->UnitToChase && UnitBase->UnitToChase->GetUnitState() != UnitData::Dead)
 	{

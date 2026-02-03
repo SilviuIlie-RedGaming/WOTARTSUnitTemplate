@@ -336,7 +336,7 @@ void ARLAgent::ReceiveRLAction(FString ActionJSON)
                 
                 SwitchControllerStateMachine(InputActionValue, NewCameraState);
                 
-                if (ActionName.StartsWith("switch_camera_state_ability"))
+                if (ExtendedController->SelectedUnits.Num() && ActionName.StartsWith("switch_camera_state_ability"))
                 {
                     UE_LOG(LogTemp, Warning, TEXT("TRYING DROPPING WORKAREA"));
                     ExtendedController->SetWorkArea(GetActorLocation());
@@ -752,7 +752,14 @@ FGameStateData ARLAgent::GatherGameState(int32 SelectableTeamId)
                 {
                     if (T.IsValid() && MyUnit->UnitTags.HasTagExact(T))
                     {
-                        if (bFriendly) { ++FriendlyCounter; } else { ++EnemyCounter; }
+                        if (bFriendly) 
+                        {
+                            ++FriendlyCounter; 
+                        }
+                        else 
+                        { 
+                            ++EnemyCounter; 
+                        }
                     }
                 };
 

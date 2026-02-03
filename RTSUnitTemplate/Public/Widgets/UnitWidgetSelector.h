@@ -2,7 +2,7 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
+#include "CoreMinimal.h" 
 #include "Blueprint/UserWidget.h"
 #include "SelectorButton.h"
 #include "Components/TextBlock.h"
@@ -21,7 +21,7 @@ UCLASS()
 class RTSUNITTEMPLATE_API UUnitWidgetSelector : public UUserWidget
 {
 	GENERATED_BODY()
-
+	 
 	
 	virtual void NativeConstruct() override;
 
@@ -312,21 +312,20 @@ public:
 	
 	// ==================== STANCE BUTTONS ====================
 
-	// Stance button widgets - bind these in Blueprint
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "RTSUnitTemplate|Stances", meta = (BindWidgetOptional))
+	// Stance button widgets - required in Blueprint
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "RTSUnitTemplate|Stances", meta = (BindWidget))
 	class UButton* StanceAggressiveButton;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "RTSUnitTemplate|Stances", meta = (BindWidgetOptional))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "RTSUnitTemplate|Stances", meta = (BindWidget))
 	class UButton* StanceDefensiveButton;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "RTSUnitTemplate|Stances", meta = (BindWidgetOptional))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "RTSUnitTemplate|Stances", meta = (BindWidget))
 	class UButton* StancePassiveButton;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "RTSUnitTemplate|Stances", meta = (BindWidgetOptional))
 	class UButton* StanceAttackGroundButton;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "RTSUnitTemplate|Stances", meta = (BindWidgetOptional))
-	class UButton* StanceCancelButton;
+	//Julien changes// Removed StanceCancelButton - was here before
 
 	// Destroy button to self-destruct selected units
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "RTSUnitTemplate|Stances", meta = (BindWidgetOptional))
@@ -360,8 +359,7 @@ public:
 	UFUNCTION()
 	void OnStanceAttackGroundClicked();
 
-	UFUNCTION()
-	void OnStanceCancelClicked();
+	//Julien changes// Removed OnStanceCancelClicked() - was here before
 
 	UFUNCTION()
 	void OnDestroyButtonClicked();

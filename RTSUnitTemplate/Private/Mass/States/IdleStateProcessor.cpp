@@ -10,6 +10,7 @@
 #include "Characters/Unit/UnitBase.h"
 #include "Mass/UnitMassTag.h"
 #include "Mass/Signals/MySignals.h"
+#include "Core/UnitData.h" //Julien changes// Added for passive stance check
 #include "Async/Async.h"
 
 // ...
@@ -96,7 +97,10 @@ void UIdleStateProcessor::Execute(FMassEntityManager& EntityManager, FMassExecut
             
             
 
-            if (TargetFrag.bHasValidTarget && !StateFrag.SwitchingState && !StateFrag.HoldPosition)
+            //Julien changes// Passive stance units should NOT auto-attack enemies
+            const bool bIsPassive = (TargetFrag.CurrentStance == static_cast<uint8>(UnitStanceData::EStance::Passive));
+
+            if (TargetFrag.bHasValidTarget && !StateFrag.SwitchingState && !StateFrag.HoldPosition && !bIsPassive) //Julien changes// Added !bIsPassive
             {
                 StateFrag.SwitchingState = true;
                 if (SignalSubsystem)
@@ -106,7 +110,7 @@ void UIdleStateProcessor::Execute(FMassEntityManager& EntityManager, FMassExecut
                 continue;
             }
 
-            if (TargetFrag.bHasValidTarget && !StateFrag.SwitchingState && StateFrag.HoldPosition)
+            if (TargetFrag.bHasValidTarget && !StateFrag.SwitchingState && StateFrag.HoldPosition && !bIsPassive) //Julien changes// Added !bIsPassive
             {
                 const float EffectiveAttackRange = StatsFrag.AttackRange;
     

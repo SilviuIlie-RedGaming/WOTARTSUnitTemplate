@@ -5,6 +5,7 @@
 #include "MassSignalSubsystem.h"
 #include "Mass/UnitMassTag.h"
 #include "Mass/Signals/MySignals.h"
+#include "Core/UnitData.h" //Julien changes// Added for passive stance check
 #include "Async/Async.h"
 
 UIsAttackedStateProcessor::UIsAttackedStateProcessor(): EntityQuery()
@@ -73,7 +74,10 @@ void UIsAttackedStateProcessor::Execute(FMassEntityManager& EntityManager, FMass
             {
                 StateFrag.SwitchingState = true;
 
-                if (TargetFrag.bHasValidTarget)
+                //Julien changes// Passive stance units should NOT counter-attack - just return to idle
+                const bool bIsPassive = (TargetFrag.CurrentStance == static_cast<uint8>(UnitStanceData::EStance::Passive));
+
+                if (TargetFrag.bHasValidTarget && !bIsPassive) //Julien changes// Added !bIsPassive check
                 {
                     if (SignalSubsystem)
                     {

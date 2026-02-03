@@ -8,7 +8,6 @@ public class RTSUnitTemplate : ModuleRules
     {
         PCHUsage = PCHUsageMode.UseExplicitOrSharedPCHs;
         PrivatePCHHeaderFile = "Public/RTSUnitTemplate.h";
-
         // Public: only what our public headers require
         PublicDependencyModuleNames.AddRange(new string[]
         {
@@ -51,7 +50,9 @@ public class RTSUnitTemplate : ModuleRules
 
             // Misc
             "StructUtils", "Json", "JsonUtilities", "RenderCore", "XRBase", "Landscape",
-            "NNE"
+
+            //Julien changes// Neural Network Engine (for InferenceComponent)
+            "NNE", "NNERuntimeBasicCpu"
         });
     }
 }

@@ -1756,10 +1756,6 @@ void UUnitWidgetSelector::GetStanceButtonsFromBP()
 	{
 		StanceAttackGroundButton = Cast<UButton>(GetWidgetFromName(FName("StanceAttackGroundButton")));
 	}
-	if (!StanceCancelButton)
-	{
-		StanceCancelButton = Cast<UButton>(GetWidgetFromName(FName("StanceCancelButton")));
-	}
 	if (!DestroyButton)
 	{
 		DestroyButton = Cast<UButton>(GetWidgetFromName(FName("DestroyButton")));
@@ -1771,17 +1767,6 @@ void UUnitWidgetSelector::GetStanceButtonsFromBP()
 		CurrentStanceText = Cast<UTextBlock>(GetWidgetFromName(FName("CurrentStanceText")));
 	}
 
-	// Only log if any buttons were found
-	if (StanceAggressiveButton || StanceDefensiveButton || StancePassiveButton || StanceAttackGroundButton || StanceCancelButton || DestroyButton)
-	{
-		UE_LOG(LogTemp, Warning, TEXT("[UnitWidgetSelector] Found stance buttons: Aggressive=%s, Defensive=%s, Passive=%s, AttackGround=%s, Cancel=%s, Destroy=%s"),
-			StanceAggressiveButton ? TEXT("Yes") : TEXT("No"),
-			StanceDefensiveButton ? TEXT("Yes") : TEXT("No"),
-			StancePassiveButton ? TEXT("Yes") : TEXT("No"),
-			StanceAttackGroundButton ? TEXT("Yes") : TEXT("No"),
-			StanceCancelButton ? TEXT("Yes") : TEXT("No"),
-			DestroyButton ? TEXT("Yes") : TEXT("No"));
-	}
 }
 
 void UUnitWidgetSelector::BindStanceButtonEvents()
@@ -1802,10 +1787,7 @@ void UUnitWidgetSelector::BindStanceButtonEvents()
 	{
 		StanceAttackGroundButton->OnClicked.AddUniqueDynamic(this, &UUnitWidgetSelector::OnStanceAttackGroundClicked);
 	}
-	if (StanceCancelButton)
-	{
-		StanceCancelButton->OnClicked.AddUniqueDynamic(this, &UUnitWidgetSelector::OnStanceCancelClicked);
-	}
+	//Julien changes// Removed StanceCancelButton binding - was here before
 	if (DestroyButton)
 	{
 		DestroyButton->OnClicked.AddUniqueDynamic(this, &UUnitWidgetSelector::OnDestroyButtonClicked);
@@ -1814,7 +1796,6 @@ void UUnitWidgetSelector::BindStanceButtonEvents()
 
 void UUnitWidgetSelector::OnStanceAggressiveClicked()
 {
-	UE_LOG(LogTemp, Log, TEXT("[UnitWidgetSelector] Aggressive stance button clicked"));
 	SetStanceOnSelectedUnits(static_cast<uint8>(UnitStanceData::EStance::Aggressive));
 	bIsAwaitingAttackGroundTarget = false;
 	if (ControllerBase)
@@ -1825,7 +1806,6 @@ void UUnitWidgetSelector::OnStanceAggressiveClicked()
 
 void UUnitWidgetSelector::OnStanceDefensiveClicked()
 {
-	UE_LOG(LogTemp, Warning, TEXT("[Stance] ===== DEFENSIVE BUTTON CLICKED ====="));
 	SetStanceOnSelectedUnits(static_cast<uint8>(UnitStanceData::EStance::Defensive));
 	bIsAwaitingAttackGroundTarget = false;
 	if (ControllerBase)
@@ -1836,7 +1816,6 @@ void UUnitWidgetSelector::OnStanceDefensiveClicked()
 
 void UUnitWidgetSelector::OnStancePassiveClicked()
 {
-	UE_LOG(LogTemp, Log, TEXT("[UnitWidgetSelector] Passive stance button clicked"));
 	SetStanceOnSelectedUnits(static_cast<uint8>(UnitStanceData::EStance::Passive));
 	bIsAwaitingAttackGroundTarget = false;
 	if (ControllerBase)
@@ -1847,60 +1826,21 @@ void UUnitWidgetSelector::OnStancePassiveClicked()
 
 void UUnitWidgetSelector::OnStanceAttackGroundClicked()
 {
-	UE_LOG(LogTemp, Warning, TEXT("[UnitWidgetSelector] ===== ATTACK GROUND BUTTON CLICKED ====="));
-	// Set flag to await ground target click (controller will handle the actual location selection)
 	bIsAwaitingAttackGroundTarget = true;
 
-	// Notify the controller that we're awaiting an attack ground target
 	if (ControllerBase)
 	{
 		ControllerBase->bIsAwaitingAttackGroundTarget = true;
-		UE_LOG(LogTemp, Warning, TEXT("[UnitWidgetSelector] Controller bIsAwaitingAttackGroundTarget set to TRUE. SelectedUnits: %d"), ControllerBase->SelectedUnits.Num());
 	}
-	else
-	{
-		UE_LOG(LogTemp, Error, TEXT("[UnitWidgetSelector] NO CONTROLLER - cannot set attack ground mode!"));
-	}
-}
-
-void UUnitWidgetSelector::OnStanceCancelClicked()
-{
-	UE_LOG(LogTemp, Log, TEXT("[UnitWidgetSelector] Cancel/Stop stance button clicked"));
-
-	// Cancel attack ground waiting mode
-	bIsAwaitingAttackGroundTarget = false;
-	if (ControllerBase)
-	{
-		ControllerBase->bIsAwaitingAttackGroundTarget = false;
-	}
-
-	// Use the controller's SetStanceOnSelectedUnits which properly syncs Mass fragments via server RPC
-	if (ControllerBase)
-	{
-		ControllerBase->SetStanceOnSelectedUnits(static_cast<uint8>(UnitStanceData::EStance::Aggressive));
-	}
-
-	UpdateStanceButtonVisuals();
 }
 
 void UUnitWidgetSelector::OnDestroyButtonClicked()
 {
-	UE_LOG(LogTemp, Warning, TEXT("[UnitWidgetSelector] ===== DESTROY BUTTON CLICKED ===== SelectedUnits: %d"),
-		ControllerBase ? ControllerBase->SelectedUnits.Num() : -1);
-
-	if (!ControllerBase)
+	if (!ControllerBase || ControllerBase->SelectedUnits.Num() == 0)
 	{
-		UE_LOG(LogTemp, Error, TEXT("[UnitWidgetSelector] OnDestroyButtonClicked - No controller!"));
 		return;
 	}
 
-	if (ControllerBase->SelectedUnits.Num() == 0)
-	{
-		UE_LOG(LogTemp, Warning, TEXT("[UnitWidgetSelector] OnDestroyButtonClicked - No units selected!"));
-		return;
-	}
-
-	// Destroy all selected units via server RPC
 	ControllerBase->DestroySelectedUnits();
 }
 
@@ -1908,13 +1848,10 @@ void UUnitWidgetSelector::SetStanceOnSelectedUnits(uint8 NewStance)
 {
 	if (!ControllerBase)
 	{
-		UE_LOG(LogTemp, Warning, TEXT("[UnitWidgetSelector] SetStanceOnSelectedUnits - No controller!"));
 		return;
 	}
 
-	// Use the controller's method which handles server replication
 	ControllerBase->SetStanceOnSelectedUnits(NewStance);
-
 	UpdateStanceButtonVisuals();
 }
 
@@ -1939,7 +1876,6 @@ void UUnitWidgetSelector::UpdateStanceButtonVisuals()
 	if (StanceDefensiveButton) StanceDefensiveButton->SetVisibility(StanceButtonVisibility);
 	if (StancePassiveButton) StancePassiveButton->SetVisibility(StanceButtonVisibility);
 	if (StanceAttackGroundButton) StanceAttackGroundButton->SetVisibility(StanceButtonVisibility);
-	if (StanceCancelButton) StanceCancelButton->SetVisibility(StanceButtonVisibility);
 	if (CurrentStanceText) CurrentStanceText->SetVisibility(StanceButtonVisibility);
 
 	// If only buildings selected, skip the rest of the stance logic

@@ -36,10 +36,12 @@
 #include "AbilitySystemComponent.h"
 #include "Characters\Unit\UnitBase.h"
 #include "Characters/Unit/SpeakingUnit.h"
+#include "Mass/MassActorBindingComponent.h" //Julien changes// Added for stance sync to Mass
 #include "GameplayTagContainer.h"
 #include "Characters/Unit/ConstructionUnit.h"
 #include "Interfaces/CapturePointInterface.h"
 #include "UI/Notifications/NotificationSubsystem.h"
+#include "NiagaraFunctionLibrary.h"
 
 
 void ACustomControllerBase::Multi_SetMyTeamUnits_Implementation(const TArray<AActor*>& AllUnits)
@@ -1041,6 +1043,7 @@ void ACustomControllerBase::RightClickPressedMass()
 			if (!SelectedUnits[0]->CurrentDraggedWorkArea)
 			{
 				GetHitResultUnderCursor(ECC_Visibility, false, Hit);
+				SpawnRightClickIndicatorEffect(Hit);
 				if (!CheckClickOnWorkArea(Hit))
 				{
 					RunUnitsAndSetWaypointsMass(Hit);
@@ -1377,7 +1380,7 @@ void ACustomControllerBase::RunUnitsAndSetWaypointsMass(FHitResult Hit)
         }
         else if (IsShiftPressed)
         {
-            DrawDebugCircleAtLocation(GetWorld(), Loc, FColor::Green);
+            //DrawDebugCircleAtLocation(GetWorld(), Loc, FColor::Green);
             if (!U->IsInitialized || !U->CanMove) continue;
             if (U->bIsMassUnit)
             {
@@ -1394,7 +1397,7 @@ void ACustomControllerBase::RunUnitsAndSetWaypointsMass(FHitResult Hit)
         }
         else
         {
-            DrawDebugCircleAtLocation(GetWorld(), Loc, FColor::Green);
+            //DrawDebugCircleAtLocation(GetWorld(), Loc, FColor::Green);
             if (!U->IsInitialized || !U->CanMove) continue;
             if (U->bIsMassUnit)
             {
@@ -1467,6 +1470,30 @@ bool ACustomControllerBase::HandleCapturePointSelection(const FHitResult& HitPaw
 		return true;
 	}
 	return false;
+}
+
+void ACustomControllerBase::SpawnRightClickIndicatorEffect(const FHitResult& Hit) const
+{
+	if (!IsLocalController() || !RightClickLocationIndicator)
+	{
+		return;
+	}
+
+	if (!Hit.bBlockingHit)
+	{
+		return;
+	}
+
+	if (UWorld* World = GetWorld())
+	{
+		UNiagaraFunctionLibrary::SpawnSystemAtLocation(
+			World,
+			RightClickLocationIndicator,
+			Hit.Location,
+			FRotator::ZeroRotator,
+			FVector::OneVector
+		);
+	}
 }
 
 void ACustomControllerBase::LeftClickPressedMass()
@@ -2192,8 +2219,35 @@ void ACustomControllerBase::Server_SetUnitStance_Implementation(AUnitBase* Unit,
 
 	Unit->CurrentStance = static_cast<UnitStanceData::EStance>(NewStance);
 
-	UE_LOG(LogTemp, Log, TEXT("[CustomControllerBase] Server_SetUnitStance: Unit %s set to stance %d"),
-		*Unit->GetName(), NewStance);
+	// Julien Code - If switching to Passive, clear the current target to stop attacking
+	if (NewStance == static_cast<uint8>(UnitStanceData::EStance::Passive))
+	{
+		Unit->UnitToChase = nullptr;
+		Unit->UnitsToChase.Empty();
+	}
+
+	if (UMassActorBindingComponent* MassBinding = Unit->FindComponentByClass<UMassActorBindingComponent>())
+	{
+		FMassEntityHandle EntityHandle = MassBinding->GetMassEntityHandle();
+		if (EntityHandle.IsSet())
+		{
+			if (UMassEntitySubsystem* MassSubsystem = GetWorld()->GetSubsystem<UMassEntitySubsystem>())
+			{
+				FMassEntityManager& EntityManager = MassSubsystem->GetMutableEntityManager();
+				if (FMassAITargetFragment* TargetFrag = EntityManager.GetFragmentDataPtr<FMassAITargetFragment>(EntityHandle))
+				{
+					TargetFrag->CurrentStance = NewStance;
+
+					// Julien Code - If switching to Passive, clear the target to stop attacking
+					if (NewStance == static_cast<uint8>(UnitStanceData::EStance::Passive))
+					{
+						TargetFrag->TargetEntity = FMassEntityHandle();
+						TargetFrag->bHasValidTarget = false;
+					}
+				}
+			}
+		}
+	}
 }
 
 void ACustomControllerBase::SetAttackGroundLocationOnSelectedUnits(const FVector& Location)
@@ -2216,6 +2270,26 @@ void ACustomControllerBase::Server_SetAttackGroundLocation_Implementation(AUnitB
 
 	UE_LOG(LogTemp, Log, TEXT("[CustomControllerBase] Server_SetAttackGroundLocation: Unit %s attacking location %s"),
 		*Unit->GetName(), *Location.ToString());
+
+	//Julien changes// Sync stance to Mass fragment
+	if (UMassActorBindingComponent* MassBinding = Unit->FindComponentByClass<UMassActorBindingComponent>())
+	{
+		FMassEntityHandle EntityHandle = MassBinding->GetMassEntityHandle();
+		if (EntityHandle.IsSet())
+		{
+			if (UMassEntitySubsystem* MassSubsystem = GetWorld()->GetSubsystem<UMassEntitySubsystem>())
+			{
+				FMassEntityManager& EntityManager = MassSubsystem->GetMutableEntityManager();
+				if (FMassAITargetFragment* TargetFrag = EntityManager.GetFragmentDataPtr<FMassAITargetFragment>(EntityHandle))
+				{
+					TargetFrag->CurrentStance = static_cast<uint8>(UnitStanceData::EStance::AttackGround);
+					TargetFrag->bHasAttackGroundTarget = true;
+					TargetFrag->AttackGroundLocation = Location;
+				}
+			}
+		}
+	}
+	//Julien changes// End stance sync
 }
 
 void ACustomControllerBase::DestroySelectedUnits()

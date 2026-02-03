@@ -68,7 +68,9 @@ void ABuildingControllerBase::BuildingControlStateMachine(AUnitBase* UnitBase, f
 			} 
 				
 
-			if(UnitBase->CollisionUnit && UnitBase->CollisionUnit->TeamId != UnitBase->TeamId && UnitBase->CollisionUnit->GetUnitState() != UnitData::Dead)
+			// Only react to enemy collision if not Passive stance
+			if(UnitBase->CurrentStance != UnitStanceData::EStance::Passive &&
+			   UnitBase->CollisionUnit && UnitBase->CollisionUnit->TeamId != UnitBase->TeamId && UnitBase->CollisionUnit->GetUnitState() != UnitData::Dead)
 			{
 				UnitBase->UnitToChase = UnitBase->CollisionUnit;
 				UnitBase->UnitsToChase.Emplace(UnitBase->CollisionUnit);
@@ -254,7 +256,9 @@ void ABuildingControllerBase::AttackBuilding(AUnitBase* UnitBase, float DeltaSec
 					UnitBase->UnitToChase->ActivateAbilityByInputID(UnitBase->UnitToChase->DefensiveAbilityID, UnitBase->UnitToChase->DefensiveAbilities);
 					UnitBase->UnitToChase->FireEffects(UnitBase->MeleeImpactVFX, UnitBase->MeleeImpactSound, UnitBase->ScaleImpactVFX, UnitBase->ScaleImpactSound, UnitBase->MeeleImpactVFXDelay, UnitBase->MeleeImpactSoundDelay);
 					
-					if (!UnitBase->UnitToChase->UnitsToChase.Contains(UnitBase))
+					// Only trigger counter-attack if victim is not Passive stance
+				if (UnitBase->UnitToChase->CurrentStance != UnitStanceData::EStance::Passive &&
+					!UnitBase->UnitToChase->UnitsToChase.Contains(UnitBase))
 					{
 						// If not, add UnitBase to the array
 						UnitBase->UnitToChase->UnitsToChase.Emplace(UnitBase);
