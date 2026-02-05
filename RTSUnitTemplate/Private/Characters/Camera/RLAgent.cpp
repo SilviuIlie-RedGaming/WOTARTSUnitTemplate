@@ -537,7 +537,7 @@ void ARLAgent::RunUnitsAndSetWaypoints(FHitResult Hit, AExtendedControllerBase* 
 		ExtendedController->Server_Batch_SetBuildingWaypoints(BuildingLocs, BuildingUnits);
 	}
 
-	if (ExtendedController->WaypointSound && PlayWaypointSoundTotal)
+	if (ExtendedController->WaypointSound && PlayWaypointSoundTotal && ExtendedController->IsLocalController())
 	{
 		UGameplayStatics::PlaySound2D(ExtendedController, ExtendedController->WaypointSound, ExtendedController->GetSoundMultiplier());
 	}
@@ -626,9 +626,9 @@ void ARLAgent::PerformLeftClickAction(const FHitResult& HitResult, bool AttackTo
             CustomControllerBase->Server_Batch_SetBuildingWaypoints(BuildingLocs, BuildingUnits);
         }
 
-        if (CustomControllerBase->WaypointSound && PlayWaypointSoundTotal)
+        if (CustomControllerBase->WaypointSound && PlayWaypointSoundTotal && CustomControllerBase->IsLocalController())
         {
-            UGameplayStatics::PlaySound2D(CustomControllerBase, CustomControllerBase->WaypointSound, CustomControllerBase->GetSoundMultiplier());
+		UGameplayStatics::PlaySound2D(CustomControllerBase, CustomControllerBase->WaypointSound, CustomControllerBase->GetSoundMultiplier());
         }
 
         if (MassUnits.Num() > 0)

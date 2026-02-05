@@ -583,9 +583,9 @@ void UInferenceComponent::UpdateBlackboard(const FGameStateData& GameState)
     BlackboardComp->SetValueAsFloat(TEXT("PrimaryResource"), GameState.PrimaryResource);
     BlackboardComp->SetValueAsFloat(TEXT("SecondaryResource"), GameState.SecondaryResource);
     BlackboardComp->SetValueAsFloat(TEXT("TertiaryResource"), GameState.TertiaryResource);
-    BlackboardComp->SetValueAsFloat(TEXT("RareResource"), GameState.RareResource);
-    BlackboardComp->SetValueAsFloat(TEXT("EpicResource"), GameState.EpicResource);
-    BlackboardComp->SetValueAsFloat(TEXT("LegendaryResource"), GameState.LegendaryResource);
+    //BlackboardComp->SetValueAsFloat(TEXT("RareResource"), GameState.RareResource);
+    //BlackboardComp->SetValueAsFloat(TEXT("EpicResource"), GameState.EpicResource);
+    //BlackboardComp->SetValueAsFloat(TEXT("LegendaryResource"), GameState.LegendaryResource);
 
     BlackboardComp->SetValueAsVector(TEXT("AgentPosition"), GameState.AgentPosition);
     BlackboardComp->SetValueAsVector(TEXT("AverageFriendlyPosition"), GameState.AverageFriendlyPosition);

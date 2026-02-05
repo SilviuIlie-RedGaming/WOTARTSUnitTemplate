@@ -154,7 +154,7 @@ public:
 	bool CheckClickOnTransportUnitMass(FHitResult Hit_Pawn);
 	
 	UFUNCTION(BlueprintCallable, Category = RTSUnitTemplate)
-	void RightClickPressedMass();
+	virtual void RightClickPressedMass();
 
 
 	/** Returns the world location of a unit, handling Actor vs. ISM-instance. */

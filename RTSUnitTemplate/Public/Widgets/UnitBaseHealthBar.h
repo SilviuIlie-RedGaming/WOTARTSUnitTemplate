@@ -41,6 +41,9 @@ public:
 	UPROPERTY(meta = (BindWidget))
 		class UProgressBar* HealthBar;
 
+	UPROPERTY(meta = (BindWidgetOptional))
+		class UProgressBar* HealthBar02;
+
 	UPROPERTY(meta = (BindWidget))
 		class UTextBlock* CurrentHealthLabel;
 	

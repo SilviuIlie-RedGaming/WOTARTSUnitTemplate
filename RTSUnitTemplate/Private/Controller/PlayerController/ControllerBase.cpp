@@ -28,7 +28,7 @@
 
 AControllerBase::AControllerBase() {
 	bShowMouseCursor = true;
-	DefaultMouseCursor = EMouseCursor::Crosshairs;
+	DefaultMouseCursor = EMouseCursor::Default;
 	bEnableClickEvents = true;
 	bEnableMouseOverEvents = true;
 }

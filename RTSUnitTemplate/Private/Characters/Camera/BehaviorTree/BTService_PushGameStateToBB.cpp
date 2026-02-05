@@ -218,16 +218,16 @@ void UBTService_PushGameStateToBB::PushOnce(UBehaviorTreeComponent& OwnerComp)
 	SafeSetBBFloat(PrimaryResourceKey, GS.PrimaryResource);
 	SafeSetBBFloat(SecondaryResourceKey, GS.SecondaryResource);
 	SafeSetBBFloat(TertiaryResourceKey, GS.TertiaryResource);
-	SafeSetBBFloat(RareResourceKey, GS.RareResource);
-	SafeSetBBFloat(EpicResourceKey, GS.EpicResource);
-	SafeSetBBFloat(LegendaryResourceKey, GS.LegendaryResource);
+	//SafeSetBBFloat(RareResourceKey, GS.RareResource);
+	//SafeSetBBFloat(EpicResourceKey, GS.EpicResource);
+	//SafeSetBBFloat(LegendaryResourceKey, GS.LegendaryResource);
 
-	SafeSetBBFloat(MaxPrimaryResourceKey, GS.MaxPrimaryResource);
-	SafeSetBBFloat(MaxSecondaryResourceKey, GS.MaxSecondaryResource);
-	SafeSetBBFloat(MaxTertiaryResourceKey, GS.MaxTertiaryResource);
-	SafeSetBBFloat(MaxRareResourceKey, GS.MaxRareResource);
-	SafeSetBBFloat(MaxEpicResourceKey, GS.MaxEpicResource);
-	SafeSetBBFloat(MaxLegendaryResourceKey, GS.MaxLegendaryResource);
+	//SafeSetBBFloat(MaxPrimaryResourceKey, GS.MaxPrimaryResource);
+	//SafeSetBBFloat(MaxSecondaryResourceKey, GS.MaxSecondaryResource);
+	//SafeSetBBFloat(MaxTertiaryResourceKey, GS.MaxTertiaryResource);
+	//SafeSetBBFloat(MaxRareResourceKey, GS.MaxRareResource);
+	//SafeSetBBFloat(MaxEpicResourceKey, GS.MaxEpicResource);
+	//SafeSetBBFloat(MaxLegendaryResourceKey, GS.MaxLegendaryResource);
 	
 	if (!AgentPositionKey.IsNone()) BB->SetValueAsVector(AgentPositionKey, GS.AgentPosition);
 	if (!AverageFriendlyPositionKey.IsNone()) BB->SetValueAsVector(AverageFriendlyPositionKey, GS.AverageFriendlyPosition);

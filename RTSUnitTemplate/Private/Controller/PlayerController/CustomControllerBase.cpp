@@ -1133,7 +1133,7 @@ bool ACustomControllerBase::TryHandleFollowOnRightClick(const FHitResult& HitPaw
 					}
 					LeftClickAttackMass(SelectedUnits, Locations, false, HitUnit);
 
-					// Play attack sound if available
+					// Play attack sound if available (only for first/human player controller)
 					if (AttackSound)
 					{
 						UGameplayStatics::PlaySound2D(this, AttackSound, GetSoundMultiplier());
@@ -1310,6 +1310,7 @@ void ACustomControllerBase::LeftClickPressedMassMinimapAttack(const FVector& Gro
 	// Reset toggle after issuing attack move, as in normal LeftClickPressedMass
 	AttackToggled = false;
 
+	// TEAM CHECK: Only play sounds if this is the local player's controller
 	if (WaypointSound && PlayWaypointSound)
 	{
 		UGameplayStatics::PlaySound2D(this, WaypointSound, GetSoundMultiplier());
@@ -1802,15 +1803,15 @@ void ACustomControllerBase::RunUnitsAndSetWaypointsMass(FHitResult Hit)
     	Server_Batch_CorrectSetUnitMoveTargets(GetWorld(), BatchUnits, BatchLocs, BatchSpeeds, BatchRadii, false);
     }
 
-    if (WaypointSound && PlayWaypoint)
+    if (WaypointSound && PlayWaypoint && IsLocalController())
     {
-        UGameplayStatics::PlaySound2D(this, WaypointSound, GetSoundMultiplier());
+		UGameplayStatics::PlaySound2D(this, WaypointSound, GetSoundMultiplier());
     }
 
     const bool bCanPlayRunSound = RunSound && PlayRun && (GetWorld()->GetTimeSeconds() - LastRunSoundTime >= RunSoundDelayTime);
     if (bCanPlayRunSound)
     {
-        UGameplayStatics::PlaySound2D(this, RunSound, GetSoundMultiplier());
+		UGameplayStatics::PlaySound2D(this, RunSound, GetSoundMultiplier());
         LastRunSoundTime = GetWorld()->GetTimeSeconds();
     }
 }
@@ -2591,14 +2592,14 @@ void ACustomControllerBase::HandleAttackMovePressed()
 
     AttackToggled = false;
 
-    // 4) play sounds
+    // 4) play sounds (only for local controller)
     if (WaypointSound && PlayWaypointSound)
     {
-        UGameplayStatics::PlaySound2D(this, WaypointSound, GetSoundMultiplier());
+		UGameplayStatics::PlaySound2D(this, WaypointSound, GetSoundMultiplier());
     }
     if (AttackSound && PlayAttackSound)
     {
-        UGameplayStatics::PlaySound2D(this, AttackSound, GetSoundMultiplier());
+		UGameplayStatics::PlaySound2D(this, AttackSound, GetSoundMultiplier());
     }
 }
 

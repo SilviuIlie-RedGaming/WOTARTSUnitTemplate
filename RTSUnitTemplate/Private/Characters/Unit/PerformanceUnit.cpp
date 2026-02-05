@@ -1,6 +1,7 @@
 // Copyright 2023 Silvan Teufel / Teufel-Engineering.com All Rights Reserved.
 
 #include "Characters/Unit/PerformanceUnit.h"
+#include "Characters/Unit/BuildingBase.h"
 
 #include "Components/WidgetComponent.h"
 #include "Components/CapsuleComponent.h"
@@ -364,6 +365,17 @@ void APerformanceUnit::HandleStandardHealthBarVisibility()
 			// Production in progress - keep widget visible and update it
 			CachedHealthBarWidget->UpdateWidget();
 			return;
+		}
+
+		// CRITICAL: Don't collapse health widget for attacked buildings!
+		if (ABuildingBase* Building = Cast<ABuildingBase>(this))
+		{
+			if (Attributes && Attributes->GetHealth() < Attributes->GetMaxHealth())
+			{
+				// Keep the widget visible and update it instead of collapsing
+				CachedHealthBarWidget->UpdateWidget();
+				return;
+			}
 		}
 
 		CachedHealthBarWidget->SetVisibility(ESlateVisibility::Collapsed);

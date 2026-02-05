@@ -697,21 +697,13 @@ void AWorkArea::UpdateBuildProgressWidget()
 	{
 		BuildProgressWidgetComp->SetVisibility(true);
 
-		// Try to update the progress bar if widget exists
 		UUserWidget* Widget = BuildProgressWidgetComp->GetUserWidgetObject();
-		UE_LOG(LogTemp, Warning, TEXT("[WorkArea] Widget exists: %s"), Widget ? TEXT("YES") : TEXT("NO"));
 
 		if (Widget)
 		{
-			// Try casting to UUnitTimerWidget for direct access
 			if (UUnitTimerWidget* TimerWidget = Cast<UUnitTimerWidget>(Widget))
 			{
-				TimerWidget->SetProgress(Progress, BuildProgressColor);
-				UE_LOG(LogTemp, Warning, TEXT("[WorkArea] SetProgress called with %.1f%%"), Progress * 100.f);
-			}
-			else
-			{
-				UE_LOG(LogTemp, Warning, TEXT("[WorkArea] Widget is NOT UUnitTimerWidget, it's %s"), *Widget->GetClass()->GetName());
+				TimerWidget->SetProgress(Progress, FLinearColor(1.f, 1.f, 1.f, 1.f));
 			}
 		}
 	}

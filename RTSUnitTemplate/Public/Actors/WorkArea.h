@@ -230,7 +230,7 @@ public:
 protected:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = RTSUnitTemplate)
 	UMaterialInterface* OriginalMaterial;
-    
+
 	/** Called by a timer to revert the material back to its original state. */
 	void RevertMaterial();
 
@@ -265,10 +265,6 @@ public:
 	// Offset for the build progress widget relative to the WorkArea
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "RTSUnitTemplate|BuildWidget")
 	FVector BuildProgressWidgetOffset = FVector(0.f, 0.f, 150.f);
-
-	// Color for the build progress bar
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "RTSUnitTemplate|BuildWidget")
-	FLinearColor BuildProgressColor = FLinearColor(0.f, 0.5f, 1.f, 1.f); // Blue
 
 	// Timer handle for updating the build progress widget
 	FTimerHandle BuildProgressTimerHandle;

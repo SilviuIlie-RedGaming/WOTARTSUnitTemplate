@@ -258,10 +258,14 @@ void UUnitWidgetSelector::UpdateCurrentAbility()
 
 	if (UnitBase->GetUnitState() != UnitData::Casting)
 	{
+		if (!CurrentAbilityTimerBar) return;
+		
 		CurrentAbilityTimerBar->SetVisibility(ESlateVisibility::Hidden);
 	}
 	else
 	{
+		if (!CurrentAbilityTimerBar) return;
+		
 		const float Denom = (UnitBase->CastTime > KINDA_SMALL_NUMBER) ? UnitBase->CastTime : 1.f;
 		float Percent = FMath::Clamp(UnitBase->UnitControlTimer / Denom, 0.f, 1.f);
 		CurrentAbilityTimerBar->SetPercent(Percent);
